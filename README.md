@@ -2,7 +2,41 @@
 
 Automação de testes de assistentes virtuais pela interface web. O usuário cola um prompt com as orientações do teste. O ChatProbe usa esse prompt para simular clientes, conversar com o chatbot e mostrar evidências do que aconteceu em cada cenário.
 
-**Status:** estrutura inicial e planejamento. O formulário, o controlador de chat e a avaliação ainda serão implementados.
+**Status:** teste de conversa com roteiro JSON validado em homologação pelo terminal. O aplicativo Windows executa lotes em modo JSON ou Groq e permite escolher quantas sessões rodam ao mesmo tempo. A avaliação automática dos critérios está prevista.
+
+Consulte o [mapa de andamento](docs/status-do-projeto.md) para ver as validações e as próximas entregas.
+
+## Aplicativo para Windows
+
+Na pasta do projeto, abra o **PowerShell do Windows** com o Python para Windows disponível e rode:
+
+```powershell
+.\build-windows.ps1
+```
+
+O script prepara o ambiente de build, baixa o Chromium e gera `dist\ChatProbe\ChatProbe.exe`. Se o Python estiver disponível pelo comando `py`, use `.\build-windows.ps1 -Python py`.
+
+Abra o executável e configure a aba **Teste**. Selecione **Roteiro JSON** para executar o exemplo ou seu próprio roteiro, ou **Groq** para escrever um objetivo em português. Use **Quantidade de testes** para repetir o mesmo cenário e **Testes simultâneos** para definir quantas sessões podem rodar juntas. Cada teste abre uma sessão de Chromium. Selecione o número do teste para ver a conversa e use **Salvar JSON** para exportar os resultados. Para usar em outro computador Windows, copie toda a pasta `dist\ChatProbe`.
+
+Em **Chaves de API**, selecione o provedor, informe um nome e cole a chave para salvar. Você pode cadastrar várias chaves de Groq, OpenAI, Anthropic ou Google Gemini. A chave que já estava cadastrada aparece como **Padrão**. As chaves ficam no Gerenciador de Credenciais do Windows. Para a Groq, selecione uma chave e clique em **Testar conexão** para validar o acesso à lista de modelos. [Criar uma chave da Groq](https://console.groq.com/keys)
+
+No modo **Groq**, selecione a chave para o lote e clique em **Executar teste**. A Groq usa o objetivo e as mensagens da sessão para decidir o que enviar pelo campo de texto ou quando encerrar. O ChatProbe usa `openai/gpt-oss-20b` e encerra cada sessão ao atingir seis mensagens do cliente. Se a Groq recusar uma chamada por limite de tokens ou de requisições, o aplicativo exibe um aviso, pausa o lote e preserva as mensagens capturadas. [Limites da Groq](https://console.groq.com/docs/rate-limits)
+
+Para rodar a janela desktop diretamente no ambiente do WSL já preparado com Playwright e Chromium, use `python -m app.desktop` na raiz do projeto.
+
+## Interface Streamlit
+
+No WSL, ative o ambiente virtual e abra o ChatProbe:
+
+```bash
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m streamlit run app/app.py --server.address 127.0.0.1
+```
+
+Abra `http://localhost:8501`, use o roteiro de exemplo ou cole seu JSON e clique em **Executar teste**. O Chromium abre durante a execução. Ao terminar, confira a conversa e use **Baixar JSON** para guardar o resultado.
+
+Se o Chromium ainda não estiver instalado, rode `python -m playwright install chromium`. Em uma instalação nova do WSL, também pode ser necessário rodar `python -m playwright install-deps chromium`.
 
 ## Problema e objetivo
 
@@ -56,11 +90,11 @@ flowchart TD
     D -->|Fim do cenário| E[Avaliar e registrar evidências]
 ```
 
-O **motor de conversação** interpreta o prompt uma vez. Durante cada teste, ele usa as orientações do cenário atual, os fatos simulados e o contexto necessário para decidir o próximo passo. Isso reduz o texto enviado ao modelo a cada turno. O histórico completo fica disponível para a avaliação final e para a revisão do usuário.
+No modo **Groq**, a IA interpreta a resposta do chatbot a cada turno. Ela usa o objetivo do teste, os fatos simulados e o histórico da sessão para decidir entre enviar uma mensagem de texto ou encerrar. O Playwright executa a ação e captura a próxima resposta. O modo **Roteiro JSON** usa regras de texto definidas no roteiro, e ambos registram as conversas para revisão.
 
 O **Playwright** abre o navegador, localiza os controles da interface, envia mensagens e captura as respostas. O modo visível ajuda a mapear a página e diagnosticar problemas. No modo `headless`, o navegador roda em segundo plano e o usuário pode continuar usando o computador. Caso seja necessário um login manual, essa etapa pode ser feita em uma janela visível.
 
-Cada cenário terá um contexto próprio de navegador. A primeira versão executará uma conversa por vez. Antes de habilitar o paralelismo, o projeto vai testar se o chatbot mantém históricos independentes quando mais de uma conversa é aberta com a mesma conta. As execuções terão limites de mensagens e tempo.
+Cada teste abre um navegador com contexto próprio. O aplicativo respeita a quantidade de sessões simultâneas informada. A separação dos históricos pelo chatbot ainda precisa ser confirmada em homologação com sessões paralelas.
 
 ## Resultados
 
@@ -81,7 +115,7 @@ Um critério fica como **Não verificado** se a conversa não chegar à etapa em
 | Python 3.11+ | Motor de execução e integração entre componentes. |
 | Playwright e Chromium | Navegação, envio de mensagens e captura de respostas. |
 | Pytest | Testes automatizados do próprio ChatProbe. |
-| Modelo de IA autorizado | Interpretação do prompt, simulação do cliente e avaliação da conversa. |
+| Groq | Interpretação do objetivo e simulação do cliente no aplicativo Windows. |
 | SQLite | Histórico local dos testes. |
 | Streamlit | Interface para colar o prompt, acompanhar a execução e consultar resultados. |
 

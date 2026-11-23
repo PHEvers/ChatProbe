@@ -4,6 +4,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .uv-cache/
+build/
+dist/
 
 # Configurações e sessões privadas
 .env

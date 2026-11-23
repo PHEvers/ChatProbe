@@ -1,0 +1,9 @@
+{
+  "initial_message": "Finalizei uma venda, mas o cupom não saiu.",
+  "steps": [
+    {
+      "when_contains": "seu nome",
+      "message": "Pedro Teste Automatizado"
+    }
+  ]
+}
