@@ -1,0 +1,20 @@
+# Ambiente Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.uv-cache/
+
+# Configurações e sessões privadas
+.env
+.env.*
+!.env.example
+auth.json
+playwright/.auth/
+
+# Banco de dados e resultados
+*.db
+*.sqlite3
+logs/
+reports/
+screenshots/
