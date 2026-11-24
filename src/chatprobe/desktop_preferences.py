@@ -8,6 +8,8 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from uuid import uuid4
 
+from src.chatprobe.chat_url import DEFAULT_CHAT_URL, validate_chat_url
+
 
 SETTINGS_FILE = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".config") / "ChatProbe" / "settings.json"
 DEFAULT_RESULTS_FOLDER = Path.home() / "ChatProbe" / "Resultados"
@@ -21,6 +23,7 @@ class Preferences:
     ollama_model: str = ""
     customer_name: str = ""
     night_prompts: tuple[str, ...] = ()
+    chat_url: str = DEFAULT_CHAT_URL
 
 
 def load_preferences():
@@ -34,7 +37,12 @@ def load_preferences():
     if not isinstance(folder, str) or not folder or "\x00" in folder or not Path(folder).is_absolute():
         folder = DEFAULT_RESULTS_FOLDER
     prompts = values.get("night_prompts", [])
+    try:
+        chat_url = validate_chat_url(preference_text(values, "chat_url"))
+    except ValueError:
+        chat_url = DEFAULT_CHAT_URL
     return Preferences(
+        chat_url=chat_url,
         results_folder=Path(folder),
         dark_mode=values.get("dark_mode") is True,
         mode=preference_text(values, "mode"),
@@ -63,6 +71,7 @@ def write_text_atomically(path, content):
 
 def save_preferences(preferences):
     values = asdict(preferences)
+    values["chat_url"] = validate_chat_url(preferences.chat_url)
     values["results_folder"] = str(preferences.results_folder)
     write_text_atomically(SETTINGS_FILE, json.dumps(values, ensure_ascii=False, indent=2) + "\n")
 

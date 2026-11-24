@@ -8,10 +8,11 @@ from tempfile import TemporaryDirectory
 
 import streamlit as st
 
+from src.chatprobe.desktop_preferences import load_preferences
+
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples/prompts/cupom-nao-impresso.json"
 RUNNER = ROOT / "src/chatprobe/browser/smoke.py"
-CHAT_URL = "https://suportelinx--uat.sandbox.my.site.com/CentralCliente/"
 
 
 def run_scenario(scenario_text):
@@ -21,7 +22,7 @@ def run_scenario(scenario_text):
         scenario.write_text(scenario_text, encoding="utf-8")
         process = subprocess.run(
             [
-                sys.executable, "-X", "utf8", str(RUNNER), CHAT_URL,
+                sys.executable, "-X", "utf8", str(RUNNER), load_preferences().chat_url,
                 "--scenario", str(scenario), "--output", str(report),
                 "--non-interactive",
             ],

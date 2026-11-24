@@ -14,6 +14,7 @@ from tkinter.scrolledtext import ScrolledText
 
 from src.chatprobe import groq_api, ollama_api
 from src.chatprobe.browser import smoke
+from src.chatprobe.chat_url import validate_chat_url
 from src.chatprobe.desktop_conversation import ConversationView
 from src.chatprobe.desktop_keys import KeysTab
 from src.chatprobe.desktop_night_queue import NightQueue
@@ -23,7 +24,6 @@ from src.chatprobe.runner import batch
 from src.chatprobe.windows_credentials import WindowsCredentials
 
 
-CHAT_URL = "https://suportelinx--uat.sandbox.my.site.com/CentralCliente/"
 RESOURCE_ROOT = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
 EXAMPLE = RESOURCE_ROOT / "examples/prompts/cupom-nao-impresso.json"
 JSON_MODE = "Roteiro JSON"
@@ -267,6 +267,16 @@ class ChatProbeWindow:
         self.ollama_notice = ttk.Label(execution, textvariable=self.ollama_message,
                                       wraplength=300, style="Subtitle.TLabel")
 
+        destination = ttk.Labelframe(options, text="URL do chat", padding=8)
+        destination.pack(fill="x", pady=(0, 10))
+        self.chat_url = tk.StringVar(value=self.preferences.chat_url)
+        field = ttk.Entry(destination, textvariable=self.chat_url)
+        field.pack(side="left", fill="x", expand=True)
+        field.bind("<Return>", self.save_chat_url)
+        ttk.Button(destination, text="Salvar URL", command=self.save_chat_url).pack(
+            side="right", padx=(8, 0),
+        )
+
         results = ttk.Labelframe(options, text="Pasta de resultados", padding=8)
         results.pack(fill="x", pady=(0, 10))
         self.results_folder = tk.StringVar(value=str(self.preferences.results_folder))
@@ -288,6 +298,18 @@ class ChatProbeWindow:
             ttk.Label(keys_tab, text="Abra o ChatProbe no Windows para gerenciar suas chaves.").pack(
                 anchor="w"
             )
+
+    def save_chat_url(self, event=None):
+        try:
+            url = validate_chat_url(self.chat_url.get())
+        except ValueError as error:
+            messagebox.showerror("URL do chat", str(error), parent=self.root)
+            return False
+        if url != self.preferences.chat_url:
+            if not self.update_preferences(replace(self.preferences, chat_url=url)):
+                return False
+        self.chat_url.set(url)
+        return True
 
     def choose_results_folder(self):
         folder = self.preferences.results_folder
@@ -456,7 +478,7 @@ class ChatProbeWindow:
         except (ValueError, groq_api.GroqError) as error:
             self.status.set(str(error))
             return
-        if not self.save_customer_name():
+        if not self.save_chat_url() or not self.save_customer_name():
             return
 
         self.active_prompts = prompts
@@ -478,7 +500,7 @@ class ChatProbeWindow:
         self.status.set(f"Iniciando {total} teste(s).")
         scenario, objective = test_inputs[0]
         Thread(
-            target=batch.run_batch, args=(CHAT_URL, total, parallel, self.events),
+            target=batch.run_batch, args=(self.preferences.chat_url, total, parallel, self.events),
             kwargs={"scenario": scenario, "objective": objective, "product": product,
                     "customer_name": customer_name, "headless": nightly,
                     "test_inputs": tuple(test_inputs) if nightly else None,
