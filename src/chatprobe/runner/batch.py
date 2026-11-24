@@ -11,6 +11,7 @@ from src.chatprobe.browser.replies import message_text_key
 
 
 DEFAULT_MAX_CUSTOMER_MESSAGES = 6
+CONFIRMATIONS = {"ok", "feito", "sim", "certo"}
 OPENING_APPROACHES = (
     "Relate o sintoma diretamente e pergunte como resolver.",
     "Comece com uma pergunta sobre a causa e mencione o sintoma.",
@@ -49,6 +50,25 @@ def message_signature(text):
     return " ".join(re.findall(r"\w+", message_text_key(plain)))
 
 
+def support_signature(replies):
+    return tuple(filter(None, map(message_signature, replies)))
+
+
+def repeats_in_context(signature, history):
+    if not history:
+        return False
+    current_context = support_signature(history[-1]["replies"])
+    for index, turn in enumerate(history):
+        if message_signature(turn["message"]) != signature:
+            continue
+        previous_context = support_signature(history[index - 1]["replies"]) if index else ()
+        if not index or previous_context == current_context:
+            return True
+        if signature not in CONFIRMATIONS or not current_context:
+            return True
+    return False
+
+
 class OpeningVariations:
     def __init__(self):
         self.messages = {}
@@ -77,6 +97,7 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
     turns = []
     status = "completed"
     detail = ""
+    reason = "completed"
     name_sent = False
     provider = "o Ollama" if ollama_model else "a Groq"
     next_action = ollama_api.next_action if ollama_model else groq_api.next_action
@@ -89,26 +110,26 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
             raise BatchPaused
 
     def progress(message):
-        nonlocal status, detail
+        nonlocal status, detail, reason
         if message.startswith("Roteiro interrompido:"):
-            status, detail = "interrupted", message
+            status, detail, reason = "interrupted", message, "interrupted"
         events.put(("progress", (number, message)))
 
     def next_message(history):
-        nonlocal detail, name_sent, status
+        nonlocal detail, name_sent, status, reason
         checkpoint()
         if len(history) >= max_customer_messages:
+            reason = "message_limit"
             detail = f"Limite de mensagens do cliente atingido ({max_customer_messages})."
             return None
         if history and smoke.asks_for_customer_name(history[-1]["replies"]):
             if name_sent:
-                status = "interrupted"
+                status, reason = "interrupted", "loop"
                 detail = "O chatbot voltou a pedir o nome após receber o nome configurado."
                 return None
             name_sent = True
             progress("O chatbot pediu o nome. Enviando o nome configurado.")
             return customer_name or smoke.DEFAULT_CUSTOMER_NAME
-        previous_messages = {message_signature(turn["message"]) for turn in history}
         variation = opening_variations if not history else None
         options = {}
         for attempt in range(2):
@@ -119,18 +140,20 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
                 options["opening_variation"] = variation.context(number)
             action, text = next_action(model_or_key, objective, history, product=product, **options)
             checkpoint()
-            if action == "stop":
+            if action in ("stop", "interrupt"):
                 if not history:
                     raise ValueError(f"{provider.capitalize()} não gerou o relato inicial. Revise o objetivo do teste.")
+                if action == "interrupt":
+                    status, reason = "interrupted", "interrupted"
                 detail = text
                 return None
             signature = message_signature(text)
-            if signature not in previous_messages and (
+            if not repeats_in_context(signature, history) and (
                 variation is None or variation.reserve(signature, text)
             ):
                 return text
             options["rejected_message"] = text
-        status = "interrupted"
+        status, reason = "interrupted", "loop" if variation is None else "interrupted"
         detail = (f"{provider.capitalize()} voltou a sugerir uma abertura já usada neste lote."
                   if variation is not None else
                   f"{provider.capitalize()} voltou a sugerir uma mensagem já enviada. O ChatProbe interrompeu o teste.")
@@ -147,17 +170,17 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
         smoke.main(args, log=progress, scenario=scenario, turns=turns,
                    next_message=next_message if model_or_key else None, **browser_options)
     except BatchStopped:
-        status, detail = "stopped", "Teste interrompido a pedido do usuário."
+        status, reason, detail = "stopped", "interrupted", "Teste interrompido a pedido do usuário."
     except groq_api.GroqLimitError as error:
         paused.set()
-        status, detail = "rate_limited", str(error)
+        status, reason, detail = "rate_limited", "api_limit", str(error)
         events.put(("limit", detail))
     except BatchPaused:
-        status, detail = "paused", "Lote pausado após atingir o limite da Groq."
+        status, reason, detail = "paused", "api_limit", "Lote pausado após atingir o limite da Groq."
     except (Exception, SystemExit) as error:
-        status, detail = "error", str(error)
+        status, reason, detail = "error", "technical_error", str(error)
 
-    return {"test": number, "status": status, "turns": turns, "detail": detail}
+    return {"test": number, "status": status, "termination_reason": reason, "turns": turns, "detail": detail}
 
 
 def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=None,
