@@ -14,7 +14,6 @@ from src.chatprobe.runner.reports import execution_summary
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples/prompts/cupom-nao-impresso.json"
-RUNNER = ROOT / "src/chatprobe/browser/smoke.py"
 
 
 def run_scenario(scenario_text):
@@ -24,9 +23,9 @@ def run_scenario(scenario_text):
         scenario.write_text(scenario_text, encoding="utf-8")
         process = subprocess.run(
             [
-                sys.executable, "-X", "utf8", str(RUNNER), load_preferences().chat_url,
+                sys.executable, "-X", "utf8", "-m", "src.chatprobe.runner.scripted",
+                load_preferences().chat_url,
                 "--scenario", str(scenario), "--output", str(report),
-                "--non-interactive",
             ],
             cwd=ROOT,
             stdin=subprocess.DEVNULL,
@@ -38,7 +37,7 @@ def run_scenario(scenario_text):
         )
         details = "\n".join(part.strip() for part in (process.stdout, process.stderr)
                             if part.strip())
-        if process.returncode or not report.is_file():
+        if not report.is_file():
             return None, details
         return report.read_text(encoding="utf-8"), details
 
@@ -76,6 +75,8 @@ if "execution" in st.session_state:
         metadata = turns[0].get("test_metadata", {}) if turns else {}
         if metadata:
             st.text(execution_summary(metadata))
+        if metadata.get("status") == "error":
+            st.error("O teste foi encerrado com erro técnico. A conversa parcial foi preservada.")
         for turn in turns:
             with st.chat_message("user"):
                 if turn.get("sent_at"):

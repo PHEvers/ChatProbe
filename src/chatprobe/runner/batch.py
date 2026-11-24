@@ -1,14 +1,17 @@
 """Executa lotes de sessões isoladas e preserva o resultado de cada teste."""
 
 import re
+import sqlite3
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from threading import Event, Lock
 from unicodedata import combining, normalize
+from uuid import uuid4
 
 from src.chatprobe import groq_api, ollama_api
 from src.chatprobe.browser import smoke
 from src.chatprobe.browser.replies import message_text_key
 from src.chatprobe.browser.timing import ExecutionTiming
+from src.chatprobe.storage.sqlite_store import RunStore
 
 
 DEFAULT_MAX_CUSTOMER_MESSAGES = 6
@@ -94,7 +97,7 @@ class OpeningVariations:
 
 def run_test(number, url, scenario, objective, key, paused, events, *, product=smoke.DEFAULT_PRODUCT,
              customer_name=None, opening_variations=None, ollama_model=None, headless=False,
-             max_customer_messages=DEFAULT_MAX_CUSTOMER_MESSAGES, control=None):
+             max_customer_messages=DEFAULT_MAX_CUSTOMER_MESSAGES, control=None, store=None, batch_id=None):
     timing = ExecutionTiming()
     turns = []
     status = "completed"
@@ -104,6 +107,26 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
     provider = "o Ollama" if ollama_model else "a Groq"
     next_action = ollama_api.next_action if ollama_model else groq_api.next_action
     model_or_key = ollama_model or key
+    test_id = None
+
+    def persist(operation, *args):
+        nonlocal store
+        if store is None:
+            return None
+        try:
+            return operation(*args)
+        except (OSError, sqlite3.Error):
+            store = None
+            events.put(("storage_error", "Falha na gravação SQLite. Os relatórios JSON continuam disponíveis."))
+            return None
+
+    if store is not None:
+        mode = "ollama" if ollama_model else "groq" if key else "json"
+        test_id = persist(store.start_test, batch_id or uuid4().hex, number, mode, timing.started_at)
+
+    def save_turn(turn_number, turn):
+        if store is not None:
+            persist(store.save_turn, test_id, turn_number, turn)
 
     def checkpoint():
         if control is not None:
@@ -115,6 +138,11 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
         nonlocal status, detail, reason
         if message.startswith("Roteiro interrompido:"):
             status, detail, reason = "interrupted", message, "interrupted"
+        if store is not None:
+            if message.startswith("Triagem concluída"):
+                persist(store.event, test_id, "triage_completed")
+            elif message.startswith("Roteiro interrompido:"):
+                persist(store.event, test_id, "script_interrupted")
         events.put(("progress", (number, message)))
 
     def next_message(history):
@@ -169,6 +197,8 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
         if customer_name is not None:
             args.append(f"--customer-name={customer_name}")
         browser_options = {"checkpoint": checkpoint} if control is not None else {}
+        if store is not None:
+            browser_options["on_turn"] = save_turn
         smoke.main(args, log=progress, scenario=scenario, turns=turns,
                    next_message=next_message if model_or_key else None, **browser_options)
     except BatchStopped:
@@ -182,14 +212,19 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
     except (Exception, SystemExit) as error:
         status, reason, detail = "error", "technical_error", str(error)
 
-    return {"test": number, "status": status, "termination_reason": reason, "turns": turns,
-            "detail": detail, **timing.fields()}
+    result = {"test": number, "status": status, "termination_reason": reason, "turns": turns,
+              "detail": detail, **timing.fields()}
+    if test_id is not None:
+        result["id"] = test_id
+    if store is not None:
+        persist(store.finish_test, test_id, result)
+    return result
 
 
 def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=None,
               product=smoke.DEFAULT_PRODUCT, customer_name=None, ollama_model=None,
               max_customer_messages=DEFAULT_MAX_CUSTOMER_MESSAGES, test_inputs=None, headless=False,
-              control=None):
+              control=None, database_path=None):
     paused = Event()
     run_control = control if control is not None else BatchControl()
     guided = bool(key or ollama_model)
@@ -199,6 +234,8 @@ def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=
             raise ValueError("O limite de mensagens do cliente deve ser maior que zero.")
         if test_inputs is not None and len(test_inputs) != total:
             raise ValueError("A quantidade de testes deve coincidir com a fila de prompts.")
+        store = open_store(database_path, events) if database_path is not None else None
+        batch_id = uuid4().hex
         with ThreadPoolExecutor(max_workers=parallel) as pool:
             running = set()
             number = 1
@@ -217,7 +254,7 @@ def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=
                                          paused, events, product=product, customer_name=customer_name,
                                          opening_variations=opening_variations, ollama_model=ollama_model,
                                          headless=headless, max_customer_messages=max_customer_messages,
-                                         control=control)
+                                         control=control, store=store, batch_id=batch_id)
                     running.add(future)
                     number += 1
                 if running:
@@ -228,3 +265,11 @@ def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=
         events.put(("batch_error", str(error)))
     finally:
         events.put(("finished", None))
+
+
+def open_store(path, events):
+    try:
+        return RunStore(path)
+    except (OSError, sqlite3.Error):
+        events.put(("storage_error", "Falha ao abrir o SQLite. Os relatórios JSON continuam disponíveis."))
+        return None

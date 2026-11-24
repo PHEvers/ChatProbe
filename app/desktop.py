@@ -23,6 +23,7 @@ from src.chatprobe.desktop_preferences import load_preferences, save_preferences
 from src.chatprobe.desktop_theme import DesktopTheme
 from src.chatprobe.runner import batch
 from src.chatprobe.runner.reports import execution_summary, legacy_conversation
+from src.chatprobe.storage.sqlite_store import DEFAULT_DATABASE
 from src.chatprobe.windows_credentials import WindowsCredentials
 
 
@@ -507,7 +508,7 @@ class ChatProbeWindow:
             kwargs={"scenario": scenario, "objective": objective, "product": product,
                     "customer_name": customer_name, "headless": nightly,
                     "test_inputs": tuple(test_inputs) if nightly else None,
-                    "control": self.run_control, **options},
+                    "control": self.run_control, "database_path": DEFAULT_DATABASE, **options},
         ).start()
         self.root.after(100, self.poll)
 
@@ -590,8 +591,14 @@ class ChatProbeWindow:
                     number, message = value
                     self.status.set(f"Teste {number}/{self.total} — {message}")
                 elif kind == "limit":
-                    if not self.warning.get():
-                        self.warning.set(f"{value} Nenhum novo teste será iniciado neste lote.")
+                    if value not in self.warning.get():
+                        previous = self.warning.get()
+                        self.warning.set(f"{previous} {value} Nenhum novo teste será iniciado neste lote.".strip())
+                        self.warning_label.pack(anchor="w")
+                elif kind == "storage_error":
+                    previous = self.warning.get()
+                    if value not in previous:
+                        self.warning.set(f"{previous} {value}".strip())
                         self.warning_label.pack(anchor="w")
                 elif kind == "batch_error":
                     self.warning.set(f"Não foi possível continuar o lote. {value}")
@@ -626,9 +633,11 @@ class ChatProbeWindow:
         stopped = self.run_control.stopped.is_set()
         if (
             self.active_prompts is None and self.mode == JSON_MODE and self.total == 1 and results
-            and not warning and not stopped and results[0]["turns"] and results[0]["status"] != "error"
+            and not stopped and results[0]["turns"] and results[0]["status"] != "error"
         ):
             report = legacy_conversation(results[0])
+            if warning:
+                report[0]["test_metadata"]["warning"] = warning
         else:
             report = {"total": self.total, "parallel": self.parallel,
                       "not_started" if finished else "pending": pending,
@@ -650,7 +659,7 @@ class ChatProbeWindow:
 
     def finish(self):
         self.set_running(False)
-        completed = sum(result["status"] == "completed" for result in self.results.values())
+        completed = sum(result["termination_reason"] == "completed" for result in self.results.values())
         pending = self.total - len(self.results)
         self.report = self.report_content(finished=True)
         self.save_button.state(["!disabled"])
@@ -660,7 +669,7 @@ class ChatProbeWindow:
             title = "Lote parado"
         summary = f"{completed}/{self.total} teste(s) concluído(s)."
         if completed != self.total:
-            summary += f" {len(self.results) - completed} interrompido(s) ou com erro. {pending} não iniciado(s)."
+            summary += f" {len(self.results) - completed} com outros motivos de encerramento. {pending} não iniciado(s)."
         try:
             path = self.write_report(self.report)
         except (OSError, ValueError) as error:
