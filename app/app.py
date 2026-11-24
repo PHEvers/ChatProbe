@@ -71,12 +71,17 @@ if "execution" in st.session_state:
         st.error("O ChatProbe não conseguiu concluir a execução.")
     else:
         st.subheader("Conversa")
-        turns = json.loads(report)
-        metadata = turns[0].get("test_metadata", {}) if turns else {}
+        payload = json.loads(report)
+        if isinstance(payload, list):
+            turns = payload
+            metadata = turns[0].get("test_metadata", {}) if turns else {}
+        else:
+            metadata = payload["tests"][0]
+            turns = metadata["turns"]
         if metadata:
             st.text(execution_summary(metadata))
         if metadata.get("status") == "error":
-            st.error("O teste foi encerrado com erro técnico. A conversa parcial foi preservada.")
+            st.error("O teste foi encerrado com erro técnico.")
         for turn in turns:
             with st.chat_message("user"):
                 if turn.get("sent_at"):

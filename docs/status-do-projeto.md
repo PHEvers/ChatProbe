@@ -14,7 +14,8 @@ O ChatProbe executou um roteiro JSON e registrou uma conversa com o AutoSystem e
 | Executável do Windows | Build concluído | O executável abriu corretamente e inclui o Chromium. O script mantém a versão atual e as duas anteriores. |
 | Conversa guiada por IA | Implementada e testada com simulação | Groq e Ollama usam o objetivo e o histórico da sessão para conduzir a conversa. O modelo local `qwen3:4b` foi validado com respostas simuladas. |
 | Testes noturnos | Implementados e validados com chat local | A fila persistente executa um teste por prompt com o Chromium sem janela e atualiza o JSON a cada resultado. |
-| Avaliação e histórico | Planejados | Classificar o atendimento por critério e guardar evidências e execuções anteriores. O JSON atual registra a conversa. |
+| Fundação e estabilidade | Implementada e validada localmente | URL configurável, detecção contextual de loops, motivos de encerramento, horários e armazenamento incremental em SQLite. Veja a [documentação da Fase 1](fase-1-fundacao.md). |
+| Avaliação e histórico | Planejados | Classificar o atendimento por critério e consultar execuções anteriores no aplicativo. |
 | Execução paralela | Implementada e testada com simulação | Cada teste abre uma sessão de navegador. Falta confirmar a separação dos históricos pelo chatbot em homologação. |
 
 O teste em homologação confirmou o fluxo observado do AutoSystem. A captura usa os eventos do chat e recorre aos parágrafos visíveis quando necessário. A resposta é considerada concluída após três segundos sem alteração.
