@@ -8,6 +8,7 @@ from unicodedata import combining, normalize
 from src.chatprobe import groq_api, ollama_api
 from src.chatprobe.browser import smoke
 from src.chatprobe.browser.replies import message_text_key
+from src.chatprobe.browser.timing import ExecutionTiming
 
 
 DEFAULT_MAX_CUSTOMER_MESSAGES = 6
@@ -94,6 +95,7 @@ class OpeningVariations:
 def run_test(number, url, scenario, objective, key, paused, events, *, product=smoke.DEFAULT_PRODUCT,
              customer_name=None, opening_variations=None, ollama_model=None, headless=False,
              max_customer_messages=DEFAULT_MAX_CUSTOMER_MESSAGES, control=None):
+    timing = ExecutionTiming()
     turns = []
     status = "completed"
     detail = ""
@@ -180,7 +182,8 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
     except (Exception, SystemExit) as error:
         status, reason, detail = "error", "technical_error", str(error)
 
-    return {"test": number, "status": status, "termination_reason": reason, "turns": turns, "detail": detail}
+    return {"test": number, "status": status, "termination_reason": reason, "turns": turns,
+            "detail": detail, **timing.fields()}
 
 
 def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=None,

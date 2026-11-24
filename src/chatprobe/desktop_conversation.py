@@ -4,6 +4,8 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter.font import Font
 
+from src.chatprobe.browser.timing import local_time
+
 
 SPEAKERS = {"user": "Usuário", "bot": "Bot", "detail": "Encerramento"}
 
@@ -52,10 +54,14 @@ class ConversationView(ttk.Frame):
     def show(self, turns=(), detail=""):
         self.messages = []
         for turn in turns:
-            self.messages.append(("user", turn["message"]))
-            self.messages.extend(("bot", reply) for reply in turn["replies"] if reply)
+            self.messages.append(("user", turn["message"], local_time(turn.get("sent_at"))))
+            timestamps = turn.get("reply_received_at", [])
+            for index, reply in enumerate(turn["replies"]):
+                if reply:
+                    received = timestamps[index] if index < len(timestamps) else None
+                    self.messages.append(("bot", reply, local_time(received)))
         if detail:
-            self.messages.append(("detail", detail))
+            self.messages.append(("detail", detail, ""))
         self.canvas.yview_moveto(0)
         self.layout_messages()
 
@@ -68,15 +74,15 @@ class ConversationView(ttk.Frame):
         position = self.canvas.yview()[0]
         self.canvas.delete("all")
         y = 14
-        for index, (role, text) in enumerate(self.messages):
-            y = self.draw_bubble(index, role, text, width, y)
+        for index, (role, text, timestamp) in enumerate(self.messages):
+            y = self.draw_bubble(index, role, text, timestamp, width, y)
         self.canvas.configure(scrollregion=(0, 0, width, max(y, self.canvas.winfo_height())))
         self.canvas.yview_moveto(position)
 
-    def draw_bubble(self, index, role, text, width, top):
+    def draw_bubble(self, index, role, text, timestamp, width, top):
         gutter = 14
         padding = 12
-        speaker = SPEAKERS[role]
+        speaker = f"{SPEAKERS[role]} · {timestamp}" if timestamp else SPEAKERS[role]
         content_width = max(self.message_font.measure(line) for line in text.split("\n"))
         desired_width = max(content_width, self.speaker_font.measure(speaker)) + 2 * padding
         max_width = max(1, min(width - 2 * gutter, int(width * 0.79)))
@@ -114,7 +120,7 @@ class ConversationView(ttk.Frame):
         if not self.messages:
             return
         text = (self.messages[index][1] if index is not None else
-                "\n\n".join(f"{SPEAKERS[role]}\n{message}" for role, message in self.messages))
+                "\n\n".join(f"{SPEAKERS[role]}\n{message}" for role, message, _ in self.messages))
         self.clipboard_clear()
         self.clipboard_append(text)
 

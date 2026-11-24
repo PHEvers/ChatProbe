@@ -38,7 +38,10 @@ ACTION_SCHEMA = {
 
 
 def action_messages(objective, turns, *, product=None, rejected_message=None, opening_variation=None):
-    context = {"objetivo": objective, "histórico": turns}
+    context = {
+        "objetivo": objective,
+        "histórico": [{"message": turn["message"], "replies": turn["replies"]} for turn in turns],
+    }
     if product:
         context["produto"] = product
     if rejected_message is not None:

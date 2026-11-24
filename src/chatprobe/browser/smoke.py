@@ -9,8 +9,10 @@ from unicodedata import normalize
 
 if __package__:
     from .replies import LISTEN_FOR_SUPPORT, ReplyCapture, message_text_key
+    from .timing import ExecutionTiming, utc_now
 else:
     from replies import LISTEN_FOR_SUPPORT, ReplyCapture, message_text_key
+    from timing import ExecutionTiming, utc_now
 
 
 DEFAULT_REPLY_SELECTOR = "p[lwc-20emgi50k8t]"
@@ -87,7 +89,10 @@ def wait_for_triage_step(destination, other_subject, log):
     visible_destination.wait_for(state="visible", timeout=60_000)
 
 
-def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None, checkpoint=None):
+def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None, checkpoint=None,
+         on_turn=None):
+    timing = ExecutionTiming()
+    interruption = ""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url", help="Endereço do chat de homologação")
     parser.add_argument("--cnpj", default="13041197000159",
@@ -246,25 +251,56 @@ def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None, 
             capture = ReplyCapture(page, replies, use_events=use_events)
             expect(textbox).to_be_editable()
 
+            def scenario_log(message):
+                nonlocal interruption
+                interruption = message
+                log(message)
+
             conversation = (guided_messages(next_message, turns) if next_message is not None
-                            else planned_messages(messages, rules, turns, log, args.customer_name))
+                            else planned_messages(messages, rules, turns, scenario_log, args.customer_name))
             outgoing = {message_text_key(cnpj)}
             for number, message in enumerate(conversation, start=1):
                 checkpoint()
                 outgoing.add(message_text_key(message))
                 textbox.fill(message)
                 before = capture.snapshot(outgoing)
+                sent_at = utc_now()
                 send.click()
-                turn = {"message": message, "replies": []}
+                turn = {"message": message, "replies": [], "sent_at": sent_at, "reply_received_at": []}
                 turns.append(turn)
+                if on_turn is not None:
+                    on_turn(number, turn)
+
+                def observe(replies):
+                    received_at = utc_now()
+                    previous = turn["replies"]
+                    timestamps = turn["reply_received_at"]
+                    common = 0
+                    for old, new in zip(previous, replies):
+                        if old != new:
+                            break
+                        common += 1
+                    turn["replies"] = replies
+                    turn["reply_received_at"] = timestamps[:common] + [received_at] * (len(replies) - common)
+                    if on_turn is not None:
+                        on_turn(number, turn)
+
                 log(f"Turno {number}: aguardando a resposta do bot...")
-                turn["replies"] = capture.wait_for_reply(before, outgoing)
+                reply = capture.wait_for_reply(before, outgoing, observe=observe)
+                if reply != turn["replies"]:
+                    observe(reply)
                 log(f"Turno {number}: resposta do suporte capturada.")
         finally:
             browser.close()
 
     if next_message is not None or scenario is not None:
         return turns
+    if turns:
+        outcome = "interrupted" if interruption else "completed"
+        turns[0]["test_metadata"] = {
+            "test": 1, "status": outcome, "termination_reason": outcome,
+            "detail": interruption, **timing.fields(),
+        }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(turns, ensure_ascii=False, indent=2) + "\n",
                            encoding="utf-8")

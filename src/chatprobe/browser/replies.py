@@ -79,7 +79,7 @@ class ReplyCapture:
             return visible[last.b + last.size:] or [text for text in events if text]
         return [text for text in events if text]
 
-    def wait_for_reply(self, before, outgoing, timeout_seconds=60, quiet_seconds=3):
+    def wait_for_reply(self, before, outgoing, timeout_seconds=60, quiet_seconds=3, *, observe=None):
         deadline = monotonic() + timeout_seconds
         last_reply = []
         last_change = monotonic()
@@ -89,6 +89,8 @@ class ReplyCapture:
             if reply != last_reply:
                 last_reply = reply
                 last_change = now
+                if reply and observe is not None:
+                    observe(reply)
             elif reply and now - last_change >= quiet_seconds:
                 return reply
             sleep(0.25)

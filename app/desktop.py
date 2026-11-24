@@ -14,6 +14,7 @@ from tkinter.scrolledtext import ScrolledText
 
 from src.chatprobe import groq_api, ollama_api
 from src.chatprobe.browser import smoke
+from src.chatprobe.browser.timing import ExecutionTiming
 from src.chatprobe.chat_url import validate_chat_url
 from src.chatprobe.desktop_conversation import ConversationView
 from src.chatprobe.desktop_keys import KeysTab
@@ -21,6 +22,7 @@ from src.chatprobe.desktop_night_queue import NightQueue
 from src.chatprobe.desktop_preferences import load_preferences, save_preferences, save_report, write_text_atomically
 from src.chatprobe.desktop_theme import DesktopTheme
 from src.chatprobe.runner import batch
+from src.chatprobe.runner.reports import execution_summary, legacy_conversation
 from src.chatprobe.windows_credentials import WindowsCredentials
 
 
@@ -486,6 +488,7 @@ class ChatProbeWindow:
         self.saved_report_path = None
         self.results.clear()
         self.run_control = batch.BatchControl()
+        self.batch_timing = ExecutionTiming()
         self.total = total
         self.parallel = parallel
         self.result_field.configure(state="disabled", values=())
@@ -623,13 +626,13 @@ class ChatProbeWindow:
         stopped = self.run_control.stopped.is_set()
         if (
             self.active_prompts is None and self.mode == JSON_MODE and self.total == 1 and results
-            and not warning and not stopped and results[0]["status"] != "error"
+            and not warning and not stopped and results[0]["turns"] and results[0]["status"] != "error"
         ):
-            report = results[0]["turns"]
+            report = legacy_conversation(results[0])
         else:
             report = {"total": self.total, "parallel": self.parallel,
                       "not_started" if finished else "pending": pending,
-                      "tests": results}
+                      "tests": results, **self.batch_timing.fields(finished=finished)}
             if self.active_prompts is not None:
                 report.update(prompts=self.active_prompts, finished=finished)
             if stopped and finished:
@@ -680,7 +683,7 @@ class ChatProbeWindow:
         number = int(self.result_field.get().split()[-1])
         result = self.results[number]
         self.result_status.set(STATUS_LABELS[result["status"]])
-        self.conversation.show(result["turns"], result["detail"])
+        self.conversation.show(result["turns"], execution_summary(result))
         self.copy_button.configure(state="normal" if result["turns"] or result["detail"] else "disabled")
 
     def save(self):

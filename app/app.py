@@ -8,7 +8,9 @@ from tempfile import TemporaryDirectory
 
 import streamlit as st
 
+from src.chatprobe.browser.timing import local_time
 from src.chatprobe.desktop_preferences import load_preferences
+from src.chatprobe.runner.reports import execution_summary
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples/prompts/cupom-nao-impresso.json"
@@ -70,11 +72,20 @@ if "execution" in st.session_state:
         st.error("O ChatProbe não conseguiu concluir a execução.")
     else:
         st.subheader("Conversa")
-        for turn in json.loads(report):
+        turns = json.loads(report)
+        metadata = turns[0].get("test_metadata", {}) if turns else {}
+        if metadata:
+            st.text(execution_summary(metadata))
+        for turn in turns:
             with st.chat_message("user"):
+                if turn.get("sent_at"):
+                    st.caption(local_time(turn["sent_at"]))
                 st.text(turn["message"])
             with st.chat_message("assistant"):
-                for reply in turn["replies"]:
+                timestamps = turn.get("reply_received_at", [])
+                for index, reply in enumerate(turn["replies"]):
+                    if index < len(timestamps) and timestamps[index]:
+                        st.caption(local_time(timestamps[index]))
                     st.text(reply)
         if "Roteiro interrompido:" in details:
             st.warning("O bot respondeu de forma diferente do esperado pelo roteiro.")
