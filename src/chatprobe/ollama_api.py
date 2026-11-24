@@ -11,6 +11,10 @@ class OllamaError(Exception):
     pass
 
 
+class OllamaLimitError(OllamaError):
+    pass
+
+
 def _request(endpoint, payload=None):
     timeout = 2 if payload is None else 180
     body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -22,6 +26,8 @@ def _request(endpoint, payload=None):
             with connection.getresponse() as response:
                 if response.status == 404 and payload is not None:
                     raise OllamaError("O modelo selecionado não está disponível. Confira os modelos no Ollama.")
+                if response.status == 429:
+                    raise OllamaLimitError("O Ollama atingiu um limite de requisições (HTTP 429).")
                 if response.status != 200:
                     raise OllamaError(f"O Ollama retornou um erro HTTP {response.status}.")
                 return json.load(response)

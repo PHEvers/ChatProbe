@@ -1,5 +1,7 @@
 """Endereço padrão e validação da configuração do chat."""
 
+import re
+from ipaddress import IPv6Address
 from urllib.parse import urlsplit
 
 
@@ -22,4 +24,21 @@ def validate_chat_url(value):
             or "@" in parts.netloc or "%" in hostname
             or parts.netloc.endswith(":") or port == 0):
         raise ValueError(INVALID_URL)
+    if parts.netloc.startswith("["):
+        try:
+            IPv6Address(hostname)
+        except ValueError:
+            raise ValueError(INVALID_URL) from None
+        if not re.fullmatch(r"\[[^\]]+\](?::[0-9]+)?", parts.netloc):
+            raise ValueError(INVALID_URL)
+    else:
+        try:
+            ascii_host = hostname.encode("idna").decode("ascii").removesuffix(".")
+        except UnicodeError:
+            raise ValueError(INVALID_URL) from None
+        if len(ascii_host) > 253 or not all(
+            re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label, re.I)
+            for label in ascii_host.split(".")
+        ):
+            raise ValueError(INVALID_URL)
     return url

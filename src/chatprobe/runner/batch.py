@@ -203,12 +203,12 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
                    next_message=next_message if model_or_key else None, **browser_options)
     except BatchStopped:
         status, reason, detail = "stopped", "interrupted", "Teste interrompido a pedido do usuário."
-    except groq_api.GroqLimitError as error:
+    except (groq_api.GroqLimitError, ollama_api.OllamaLimitError) as error:
         paused.set()
         status, reason, detail = "rate_limited", "api_limit", str(error)
         events.put(("limit", detail))
     except BatchPaused:
-        status, reason, detail = "paused", "api_limit", "Lote pausado após atingir o limite da Groq."
+        status, reason, detail = "paused", "api_limit", f"Lote pausado após atingir um limite d{provider}."
     except (Exception, SystemExit) as error:
         status, reason, detail = "error", "technical_error", str(error)
 

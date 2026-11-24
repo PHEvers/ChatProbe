@@ -22,7 +22,7 @@ from src.chatprobe.desktop_night_queue import NightQueue
 from src.chatprobe.desktop_preferences import load_preferences, save_preferences, save_report, write_text_atomically
 from src.chatprobe.desktop_theme import DesktopTheme
 from src.chatprobe.runner import batch
-from src.chatprobe.runner.reports import execution_summary, legacy_conversation
+from src.chatprobe.runner.reports import TERMINATION_LABELS, execution_summary, legacy_conversation
 from src.chatprobe.storage.sqlite_store import DEFAULT_DATABASE
 from src.chatprobe.windows_credentials import WindowsCredentials
 
@@ -33,8 +33,8 @@ JSON_MODE = "Roteiro JSON"
 GROQ_MODE = "Groq"
 OLLAMA_MODE = "Ollama"
 STATUS_LABELS = {
-    "completed": "Concluído", "interrupted": "Roteiro interrompido",
-    "error": "Erro de execução", "rate_limited": "Limite da Groq", "paused": "Pausado",
+    "completed": "Concluído", "interrupted": "Teste interrompido",
+    "error": "Erro de execução", "rate_limited": "Limite de API", "paused": "Pausado",
     "stopped": "Interrompido pelo usuário",
 }
 
@@ -691,7 +691,10 @@ class ChatProbeWindow:
     def show_result(self, event=None):
         number = int(self.result_field.get().split()[-1])
         result = self.results[number]
-        self.result_status.set(STATUS_LABELS[result["status"]])
+        status = STATUS_LABELS[result["status"]]
+        if result.get("termination_reason") == "message_limit":
+            status = TERMINATION_LABELS["message_limit"]
+        self.result_status.set(status)
         self.conversation.show(result["turns"], execution_summary(result))
         self.copy_button.configure(state="normal" if result["turns"] or result["detail"] else "disabled")
 
