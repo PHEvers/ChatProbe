@@ -17,6 +17,7 @@ playwright/.auth/
 # Banco de dados e resultados
 *.db
 *.sqlite3
+*.sqlite3-*
 logs/
 reports/
 screenshots/

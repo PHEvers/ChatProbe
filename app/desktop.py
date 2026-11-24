@@ -14,24 +14,27 @@ from tkinter.scrolledtext import ScrolledText
 
 from src.chatprobe import groq_api, ollama_api
 from src.chatprobe.browser import smoke
+from src.chatprobe.browser.timing import ExecutionTiming
+from src.chatprobe.chat_url import validate_chat_url
 from src.chatprobe.desktop_conversation import ConversationView
 from src.chatprobe.desktop_keys import KeysTab
 from src.chatprobe.desktop_night_queue import NightQueue
 from src.chatprobe.desktop_preferences import load_preferences, save_preferences, save_report, write_text_atomically
 from src.chatprobe.desktop_theme import DesktopTheme
 from src.chatprobe.runner import batch
+from src.chatprobe.runner.reports import TERMINATION_LABELS, execution_summary, legacy_conversation
+from src.chatprobe.storage.sqlite_store import DEFAULT_DATABASE
 from src.chatprobe.windows_credentials import WindowsCredentials
 
 
-CHAT_URL = "https://suportelinx--uat.sandbox.my.site.com/CentralCliente/"
 RESOURCE_ROOT = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
 EXAMPLE = RESOURCE_ROOT / "examples/prompts/cupom-nao-impresso.json"
 JSON_MODE = "Roteiro JSON"
 GROQ_MODE = "Groq"
 OLLAMA_MODE = "Ollama"
 STATUS_LABELS = {
-    "completed": "Concluído", "interrupted": "Roteiro interrompido",
-    "error": "Erro de execução", "rate_limited": "Limite da Groq", "paused": "Pausado",
+    "completed": "Concluído", "interrupted": "Teste interrompido",
+    "error": "Erro de execução", "rate_limited": "Limite de API", "paused": "Pausado",
     "stopped": "Interrompido pelo usuário",
 }
 
@@ -267,6 +270,16 @@ class ChatProbeWindow:
         self.ollama_notice = ttk.Label(execution, textvariable=self.ollama_message,
                                       wraplength=300, style="Subtitle.TLabel")
 
+        destination = ttk.Labelframe(options, text="URL do chat", padding=8)
+        destination.pack(fill="x", pady=(0, 10))
+        self.chat_url = tk.StringVar(value=self.preferences.chat_url)
+        field = ttk.Entry(destination, textvariable=self.chat_url)
+        field.pack(side="left", fill="x", expand=True)
+        field.bind("<Return>", self.save_chat_url)
+        ttk.Button(destination, text="Salvar URL", command=self.save_chat_url).pack(
+            side="right", padx=(8, 0),
+        )
+
         results = ttk.Labelframe(options, text="Pasta de resultados", padding=8)
         results.pack(fill="x", pady=(0, 10))
         self.results_folder = tk.StringVar(value=str(self.preferences.results_folder))
@@ -288,6 +301,18 @@ class ChatProbeWindow:
             ttk.Label(keys_tab, text="Abra o ChatProbe no Windows para gerenciar suas chaves.").pack(
                 anchor="w"
             )
+
+    def save_chat_url(self, event=None):
+        try:
+            url = validate_chat_url(self.chat_url.get())
+        except ValueError as error:
+            messagebox.showerror("URL do chat", str(error), parent=self.root)
+            return False
+        if url != self.preferences.chat_url:
+            if not self.update_preferences(replace(self.preferences, chat_url=url)):
+                return False
+        self.chat_url.set(url)
+        return True
 
     def choose_results_folder(self):
         folder = self.preferences.results_folder
@@ -456,7 +481,7 @@ class ChatProbeWindow:
         except (ValueError, groq_api.GroqError) as error:
             self.status.set(str(error))
             return
-        if not self.save_customer_name():
+        if not self.save_chat_url() or not self.save_customer_name():
             return
 
         self.active_prompts = prompts
@@ -464,6 +489,7 @@ class ChatProbeWindow:
         self.saved_report_path = None
         self.results.clear()
         self.run_control = batch.BatchControl()
+        self.batch_timing = ExecutionTiming()
         self.total = total
         self.parallel = parallel
         self.result_field.configure(state="disabled", values=())
@@ -478,11 +504,11 @@ class ChatProbeWindow:
         self.status.set(f"Iniciando {total} teste(s).")
         scenario, objective = test_inputs[0]
         Thread(
-            target=batch.run_batch, args=(CHAT_URL, total, parallel, self.events),
+            target=batch.run_batch, args=(self.preferences.chat_url, total, parallel, self.events),
             kwargs={"scenario": scenario, "objective": objective, "product": product,
                     "customer_name": customer_name, "headless": nightly,
                     "test_inputs": tuple(test_inputs) if nightly else None,
-                    "control": self.run_control, **options},
+                    "control": self.run_control, "database_path": DEFAULT_DATABASE, **options},
         ).start()
         self.root.after(100, self.poll)
 
@@ -565,8 +591,14 @@ class ChatProbeWindow:
                     number, message = value
                     self.status.set(f"Teste {number}/{self.total} — {message}")
                 elif kind == "limit":
-                    if not self.warning.get():
-                        self.warning.set(f"{value} Nenhum novo teste será iniciado neste lote.")
+                    if value not in self.warning.get():
+                        previous = self.warning.get()
+                        self.warning.set(f"{previous} {value} Nenhum novo teste será iniciado neste lote.".strip())
+                        self.warning_label.pack(anchor="w")
+                elif kind == "storage_error":
+                    previous = self.warning.get()
+                    if value not in previous:
+                        self.warning.set(f"{previous} {value}".strip())
                         self.warning_label.pack(anchor="w")
                 elif kind == "batch_error":
                     self.warning.set(f"Não foi possível continuar o lote. {value}")
@@ -601,13 +633,15 @@ class ChatProbeWindow:
         stopped = self.run_control.stopped.is_set()
         if (
             self.active_prompts is None and self.mode == JSON_MODE and self.total == 1 and results
-            and not warning and not stopped and results[0]["status"] != "error"
+            and not stopped and results[0]["turns"] and results[0]["status"] != "error"
         ):
-            report = results[0]["turns"]
+            report = legacy_conversation(results[0])
+            if warning:
+                report[0]["test_metadata"]["warning"] = warning
         else:
             report = {"total": self.total, "parallel": self.parallel,
                       "not_started" if finished else "pending": pending,
-                      "tests": results}
+                      "tests": results, **self.batch_timing.fields(finished=finished)}
             if self.active_prompts is not None:
                 report.update(prompts=self.active_prompts, finished=finished)
             if stopped and finished:
@@ -625,7 +659,7 @@ class ChatProbeWindow:
 
     def finish(self):
         self.set_running(False)
-        completed = sum(result["status"] == "completed" for result in self.results.values())
+        completed = sum(result["termination_reason"] == "completed" for result in self.results.values())
         pending = self.total - len(self.results)
         self.report = self.report_content(finished=True)
         self.save_button.state(["!disabled"])
@@ -635,7 +669,7 @@ class ChatProbeWindow:
             title = "Lote parado"
         summary = f"{completed}/{self.total} teste(s) concluído(s)."
         if completed != self.total:
-            summary += f" {len(self.results) - completed} interrompido(s) ou com erro. {pending} não iniciado(s)."
+            summary += f" {len(self.results) - completed} com outros motivos de encerramento. {pending} não iniciado(s)."
         try:
             path = self.write_report(self.report)
         except (OSError, ValueError) as error:
@@ -657,8 +691,11 @@ class ChatProbeWindow:
     def show_result(self, event=None):
         number = int(self.result_field.get().split()[-1])
         result = self.results[number]
-        self.result_status.set(STATUS_LABELS[result["status"]])
-        self.conversation.show(result["turns"], result["detail"])
+        status = STATUS_LABELS[result["status"]]
+        if result.get("termination_reason") == "message_limit":
+            status = TERMINATION_LABELS["message_limit"]
+        self.result_status.set(status)
+        self.conversation.show(result["turns"], execution_summary(result))
         self.copy_button.configure(state="normal" if result["turns"] or result["detail"] else "disabled")
 
     def save(self):

@@ -8,10 +8,12 @@ from tempfile import TemporaryDirectory
 
 import streamlit as st
 
+from src.chatprobe.browser.timing import local_time
+from src.chatprobe.desktop_preferences import load_preferences
+from src.chatprobe.runner.reports import execution_summary
+
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples/prompts/cupom-nao-impresso.json"
-RUNNER = ROOT / "src/chatprobe/browser/smoke.py"
-CHAT_URL = "https://suportelinx--uat.sandbox.my.site.com/CentralCliente/"
 
 
 def run_scenario(scenario_text):
@@ -21,9 +23,9 @@ def run_scenario(scenario_text):
         scenario.write_text(scenario_text, encoding="utf-8")
         process = subprocess.run(
             [
-                sys.executable, "-X", "utf8", str(RUNNER), CHAT_URL,
+                sys.executable, "-X", "utf8", "-m", "src.chatprobe.runner.scripted",
+                load_preferences().chat_url,
                 "--scenario", str(scenario), "--output", str(report),
-                "--non-interactive",
             ],
             cwd=ROOT,
             stdin=subprocess.DEVNULL,
@@ -35,7 +37,7 @@ def run_scenario(scenario_text):
         )
         details = "\n".join(part.strip() for part in (process.stdout, process.stderr)
                             if part.strip())
-        if process.returncode or not report.is_file():
+        if not report.is_file():
             return None, details
         return report.read_text(encoding="utf-8"), details
 
@@ -69,11 +71,27 @@ if "execution" in st.session_state:
         st.error("O ChatProbe não conseguiu concluir a execução.")
     else:
         st.subheader("Conversa")
-        for turn in json.loads(report):
+        payload = json.loads(report)
+        if isinstance(payload, list):
+            turns = payload
+            metadata = turns[0].get("test_metadata", {}) if turns else {}
+        else:
+            metadata = payload["tests"][0]
+            turns = metadata["turns"]
+        if metadata:
+            st.text(execution_summary(metadata))
+        if metadata.get("status") == "error":
+            st.error("O teste foi encerrado com erro técnico.")
+        for turn in turns:
             with st.chat_message("user"):
+                if turn.get("sent_at"):
+                    st.caption(local_time(turn["sent_at"]))
                 st.text(turn["message"])
             with st.chat_message("assistant"):
-                for reply in turn["replies"]:
+                timestamps = turn.get("reply_received_at", [])
+                for index, reply in enumerate(turn["replies"]):
+                    if index < len(timestamps) and timestamps[index]:
+                        st.caption(local_time(timestamps[index]))
                     st.text(reply)
         if "Roteiro interrompido:" in details:
             st.warning("O bot respondeu de forma diferente do esperado pelo roteiro.")

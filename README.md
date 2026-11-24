@@ -20,7 +20,7 @@ Após cada build bem-sucedido, `dist` fica com o novo pacote e até dois pacotes
 
 ### Configurar e executar um teste
 
-1. Em **Configurações → Preferências de execução**, selecione o **Modo** e informe o **Nome do cliente**. Escolha o **Modelo Ollama** ou a **Chave Groq**, conforme o modo.
+1. Em **Configurações → URL do chat**, salve o endereço HTTP ou HTTPS do ambiente de teste. O portal de homologação atual é o padrão. Em **Preferências de execução**, selecione o **Modo** e informe o **Nome do cliente**. Escolha o **Modelo Ollama** ou a **Chave Groq**, conforme o modo.
 2. Na aba **Teste**, selecione o **Produto**, informe a quantidade de testes e quantos podem rodar simultaneamente. Cole um **Prompt inicial** ou um **Roteiro JSON**, conforme o modo.
 3. Clique em **Executar teste**. Ao encerrar o lote, selecione um teste no campo **Resultado** para ler a conversa. Use **Abrir pasta do relatório** para localizar o JSON ou **Salvar JSON** para gravar uma cópia.
 
@@ -30,7 +30,7 @@ Após cada build bem-sucedido, `dist` fica com o novo pacote e até dois pacotes
 | **Ollama** | Prompt em linguagem natural | Modelo instalado no Ollama local. |
 | **Roteiro JSON** | Mensagem inicial e passos condicionados às respostas | Use o [roteiro de exemplo](examples/prompts/cupom-nao-impresso.json) ou cole seu próprio JSON. |
 
-Nos modos Groq e Ollama, **Máx. mensagens do cliente** controla o limite de cada sessão. O padrão é seis e inclui o nome quando o chatbot o solicita. O modelo pode encerrar antes se o objetivo for atingido. Em lotes que repetem um prompt, o ChatProbe solicita aberturas diferentes para o mesmo cenário.
+Nos modos Groq e Ollama, **Máx. mensagens do cliente** controla o limite de cada sessão. O padrão é seis e inclui o nome quando o chatbot o solicita. O modelo pode encerrar antes se o objetivo for atingido. Em lotes que repetem um prompt, o ChatProbe solicita aberturas diferentes para o mesmo cenário. Confirmações como **Ok**, **Feito**, **Sim** e **Certo** podem se repetir quando o bot avança para outra etapa. O retorno a uma etapa já respondida pode encerrar a conversa por loop.
 
 O nome e o produto iniciais são **Pedro Teste Automatizado** e **AUTOSYSTEM**. A triagem envia o CNPJ de teste, seleciona **Suporte Técnico** e escolhe o produto. Se o chatbot listar casos em aberto, o ChatProbe seleciona **Outro assunto**. Quando solicitado, envia o nome configurado. No modo JSON, o envio acontece no passo correspondente do roteiro.
 
@@ -68,7 +68,7 @@ python -m pip install -r requirements.txt
 python -m streamlit run app/app.py --server.address 127.0.0.1
 ```
 
-Abra `http://localhost:8501`, use o roteiro de exemplo ou cole seu JSON e clique em **Executar teste**. O Chromium abre durante a execução. Ao terminar, confira a conversa e use **Baixar JSON** para guardar o resultado.
+A interface usa a mesma URL salva nas preferências do desktop ou o portal padrão. Abra `http://localhost:8501`, use o roteiro de exemplo ou cole seu JSON e clique em **Executar teste**. O Chromium abre durante a execução. Ao terminar, confira a conversa e use **Baixar JSON** para guardar o resultado.
 
 Se o Chromium ainda não estiver instalado, rode `python -m playwright install chromium`. Em uma instalação nova do WSL, também pode ser necessário rodar `python -m playwright install-deps chromium`.
 
@@ -120,14 +120,16 @@ Cada teste abre um navegador com contexto próprio. O aplicativo respeita a quan
 
 | Status no JSON | Significado |
 | --- | --- |
-| `completed` | O teste chegou ao fim do roteiro, ao limite de mensagens ou ao encerramento indicado pelo modelo. |
+| `completed` | O teste chegou ao fim do roteiro, ao limite de mensagens ou ao encerramento indicado pelo modelo. Confira `termination_reason` para distinguir os casos. |
 | `interrupted` | A conversa parou antes de cumprir um passo do roteiro ou de conseguir uma resposta adequada para avançar. |
 | `error` | Uma falha impediu a conclusão do teste. |
-| `rate_limited` | A Groq recusou uma chamada por limite. |
-| `paused` | Uma sessão ativa foi encerrada após outra sessão do mesmo lote atingir o limite da Groq. |
+| `rate_limited` | O provedor recusou uma chamada por limite de API. |
+| `paused` | Uma sessão ativa foi encerrada após outra sessão do mesmo lote atingir o limite de API. |
 | `stopped` | O usuário interrompeu a execução com **Parar**. |
 
-O relatório de lote registra o total de testes, a quantidade simultânea, os testes que não iniciaram e as conversas encerradas. O relatório noturno também inclui a fila de prompts na ordem de execução. Use o status e o histórico de mensagens para revisar o atendimento. A avaliação automática por critério está no roadmap.
+O relatório de lote registra o total de testes, a quantidade simultânea, os testes que não iniciaram e as conversas encerradas. O relatório noturno também inclui a fila de prompts na ordem de execução. O campo `termination_reason` distingue conclusão, loop, limite de mensagens, interrupção, erro técnico e limite de API. A aprovação do atendimento depende da revisão dos critérios e das mensagens capturadas.
+
+A conversa exibe horários locais. O JSON registra início, fim, duração em segundos e horários de envio e captura em UTC. O SQLite é criado no primeiro teste ao lado das preferências, em `%LOCALAPPDATA%\ChatProbe\chatprobe.sqlite3` no Windows e normalmente em `~/.config/ChatProbe/chatprobe.sqlite3` no Linux. Ele guarda testes, mensagens e eventos à medida que ocorrem. Os relatórios JSON continuam disponíveis e o banco e os relatórios devem permanecer fora do Git. Consulte o [formato dos relatórios e a validação no Windows](docs/fase-1-fundacao.md).
 
 ## Ferramentas
 
