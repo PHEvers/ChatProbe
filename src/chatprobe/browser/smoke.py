@@ -4,10 +4,31 @@ import argparse
 import json
 import re
 from pathlib import Path
-from time import monotonic, sleep
+from time import monotonic
+from unicodedata import normalize
+
+if __package__:
+    from .replies import LISTEN_FOR_SUPPORT, ReplyCapture, message_text_key
+else:
+    from replies import LISTEN_FOR_SUPPORT, ReplyCapture, message_text_key
 
 
 DEFAULT_REPLY_SELECTOR = "p[lwc-20emgi50k8t]"
+DEFAULT_PRODUCT = "AUTOSYSTEM"
+PRODUCT_OPTIONS = (
+    DEFAULT_PRODUCT, "SELLER", "Emsys", "Posto Facil", "Autosystem Ipiranga",
+    "EMSYS", "Emporio", "D-TEF", "QR LINX", "CONECTIVIDADE",
+)
+DEFAULT_CUSTOMER_NAME = "Pedro Teste Automatizado"
+NAME_REQUEST = re.compile(
+    r"\b(?:"
+    r"(?:qual(?: e)?|informe|informar|digite|digitar|forneca|fornecer|diga|dizer|envie|enviar|"
+    r"confirme|confirmar|preciso d[eo]) (?:o )?(?:seu|teu) nome"
+    r"|(?:qual(?: e)?|informe|informar|digite|digitar|forneca|fornecer) (?:o )?nome completo"
+    r"|(?:seu|teu) nome(?: completo)?[\s,]*(?:por favor|\?)"
+    r"|como (?:posso|podemos|devo) (?:te chamar|chamar voce|chama-l[oa]|lhe chamar)"
+    r")(?!\w)"
+)
 
 
 def load_scenario(path):
@@ -32,33 +53,22 @@ def parse_scenario(data):
     return initial, rules
 
 
-def wait_for_reply(incoming, previous_count, timeout_seconds=60, quiet_seconds=3):
-    deadline = monotonic() + timeout_seconds
-    last_reply = []
-    last_change = monotonic()
-    while monotonic() < deadline:
-        reply = [
-            text.strip() for text in incoming.all_inner_texts()[previous_count:]
-            if text.strip()
-        ]
-        now = monotonic()
-        if reply != last_reply:
-            last_reply = reply
-            last_change = now
-        elif reply and now - last_change >= quiet_seconds:
-            return reply
-        sleep(0.25)
-    raise SystemExit("Tempo esgotado aguardando uma resposta estável do bot.")
+def asks_for_customer_name(replies):
+    plain = normalize("NFKD", " ".join(replies).casefold()).encode("ascii", "ignore").decode("ascii")
+    return NAME_REQUEST.search(" ".join(plain.split())) is not None
 
 
-def planned_messages(messages, rules, turns, log):
+def planned_messages(messages, rules, turns, log, customer_name=None):
     for number, message in enumerate(messages):
         if rules and number:
             expected_text, _ = rules[number - 1]
-            last_reply = " ".join(turns[-1]["replies"])
+            replies = turns[-1]["replies"]
+            last_reply = " ".join(replies)
             if expected_text.casefold() not in last_reply.casefold():
                 log(f'Roteiro interrompido: a resposta não contém "{expected_text}".')
                 return
+            if customer_name and asks_for_customer_name(replies):
+                message = customer_name
         yield message
 
 
@@ -67,11 +77,23 @@ def guided_messages(next_message, turns):
         yield message
 
 
-def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None):
+def wait_for_triage_step(destination, other_subject, log):
+    visible_destination = destination.filter(visible=True)
+    visible_destination.or_(other_subject).first.wait_for(state="visible", timeout=60_000)
+    if visible_destination.count():
+        return
+    other_subject.last.click(timeout=60_000)
+    log("Há casos em aberto. A opção Outro assunto foi selecionada.")
+    visible_destination.wait_for(state="visible", timeout=60_000)
+
+
+def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None, checkpoint=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url", help="Endereço do chat de homologação")
     parser.add_argument("--cnpj", default="13041197000159",
                         help="CNPJ de homologação do AutoSystem (somente números)")
+    parser.add_argument("--product", default=DEFAULT_PRODUCT, help="Produto selecionado na triagem")
+    parser.add_argument("--customer-name", help="Nome enviado nas etapas do roteiro que pedem o nome")
     parser.add_argument("--setup-only", action="store_true",
                         help="Pare quando o bot pedir o motivo do contato")
     parser.add_argument("--reply-selector",
@@ -79,11 +101,15 @@ def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None):
     parser.add_argument("--scenario", type=Path, help="Arquivo JSON com o roteiro")
     parser.add_argument("--non-interactive", action="store_true",
                         help="Encerre com diagnóstico se a abertura exigir intervenção")
+    parser.add_argument("--headless", action="store_true", help="Execute o Chromium sem janela")
     parser.add_argument("--message", action="append", default=[],
                         help="Mensagem inicial. Se omitida, a segunda mensagem usa "
                              "Pedro Teste Automatizado.")
     parser.add_argument("--output", type=Path, default=Path("reports/smoke.json"))
     args = parser.parse_args(argv)
+    args.non_interactive = args.non_interactive or args.headless
+    checkpoint = checkpoint if checkpoint is not None else lambda: None
+    use_events = not args.setup_only and not args.reply_selector
     rules = []
     if next_message is not None:
         messages = []
@@ -106,21 +132,28 @@ def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None):
     else:
         messages = args.message
         if len(messages) == 1:
-            messages = [*messages, "Pedro Teste Automatizado"]
+            messages = [*messages, args.customer_name or DEFAULT_CUSTOMER_NAME]
 
     cnpj = args.cnpj.strip()
     if not re.fullmatch(r"[0-9]{14}", cnpj):
         parser.error("Informe um CNPJ de teste com 14 dígitos.")
+    product = args.product.strip()
+    if not product:
+        parser.error("Informe o produto para a triagem.")
 
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import expect, sync_playwright
 
     if turns is None:
         turns = []
+    checkpoint()
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=False)
+        browser = playwright.chromium.launch(channel="chromium" if args.headless else None,
+                                             headless=args.headless)
         try:
             page = browser.new_page()
+            if use_events:
+                page.add_init_script(LISTEN_FOR_SUPPORT)
             page.goto(args.url, wait_until="domcontentloaded")
             consent = page.get_by_role("button", name="Aceitar", exact=True)
             launcher = page.get_by_role(
@@ -128,6 +161,7 @@ def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None):
             ).or_(page.locator("button#embeddedMessagingConversationButton"))
             max_attempts = 5
             for attempt in range(1, max_attempts + 1):
+                checkpoint()
                 deadline = monotonic() + 10
                 try:
                     consent.or_(launcher).filter(visible=True).first.wait_for(
@@ -154,7 +188,9 @@ def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None):
                             raise SystemExit("O balão do chat continua indisponível.")
                         break
                     log(f"Balão indisponível. Recarregando a página ({attempt}/{max_attempts - 1})...")
+                    checkpoint()
                     page.reload(wait_until="domcontentloaded")
+            checkpoint()
             launcher.filter(visible=True).first.click(timeout=15_000)
             frame_selector = (
                 'iframe[name="embeddedMessagingFrame"]:visible, '
@@ -163,6 +199,9 @@ def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None):
             chat = page.frame_locator(frame_selector)
             textbox = chat.get_by_role("textbox", name="Digite sua mensagem...")
             send = chat.get_by_role("button", name="Enviar mensagem")
+            other_subject = chat.get_by_role("option", name="Outro assunto", exact=True).or_(
+                chat.get_by_role("button", name="Outro assunto", exact=True)
+            ).filter(visible=True)
 
             stage = "o campo de mensagem do chat"
             try:
@@ -177,38 +216,50 @@ def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None):
                 if not args.non_interactive:
                     input("Confira o painel no Chromium e pressione Enter para fechar. ")
                 raise SystemExit("A triagem parou antes do envio do CNPJ.") from None
+            checkpoint()
             textbox.fill(cnpj)
             send.click()
-            chat.get_by_role("option", name="Suporte Técnico", exact=True).click(timeout=60_000)
-            chat.get_by_role("option", name="AUTOSYSTEM", exact=True).click(timeout=60_000)
-            expect(chat.get_by_text(re.compile(r"motivo do seu contato", re.I))).to_be_visible(
-                timeout=60_000
+            support = chat.get_by_role("option", name="Suporte Técnico", exact=True)
+            wait_for_triage_step(support, other_subject, log)
+            checkpoint()
+            support.click(timeout=60_000)
+            exact_product = product in PRODUCT_OPTIONS
+            product_label = product if exact_product else re.compile(
+                rf"^{re.escape(product)}$", re.IGNORECASE,
             )
+            try:
+                product_option = chat.get_by_role("option", name=product_label, exact=exact_product)
+                wait_for_triage_step(product_option, other_subject, log)
+                checkpoint()
+                product_option.click(timeout=60_000)
+            except PlaywrightTimeoutError:
+                raise SystemExit(f'O produto "{product}" não apareceu após Suporte Técnico.') from None
+            reason = chat.get_by_text(re.compile(r"motivo do seu contato", re.I))
+            wait_for_triage_step(reason, other_subject, log)
             log("Triagem concluída. O bot pediu o motivo do contato.")
             if args.setup_only:
                 if not args.non_interactive:
                     input("Pressione Enter para fechar o navegador. ")
                 return
 
-            replies = chat.locator(args.reply_selector)
+            replies = chat.locator(args.reply_selector).filter(visible=True)
+            capture = ReplyCapture(page, replies, use_events=use_events)
             expect(textbox).to_be_editable()
-            if not replies.count():
-                raise SystemExit("O seletor não encontrou nenhuma mensagem inicial do bot.")
 
             conversation = (guided_messages(next_message, turns) if next_message is not None
-                            else planned_messages(messages, rules, turns, log))
+                            else planned_messages(messages, rules, turns, log, args.customer_name))
+            outgoing = {message_text_key(cnpj)}
             for number, message in enumerate(conversation, start=1):
-                echo_pattern = r"^\s*" + r"\s+".join(
-                    re.escape(word) for word in message.split()
-                ) + r"\s*$"
-                incoming = replies.filter(has_not_text=re.compile(echo_pattern))
-                previous_count = incoming.count()
+                checkpoint()
+                outgoing.add(message_text_key(message))
                 textbox.fill(message)
+                before = capture.snapshot(outgoing)
                 send.click()
                 turn = {"message": message, "replies": []}
                 turns.append(turn)
                 log(f"Turno {number}: aguardando a resposta do bot...")
-                turn["replies"] = wait_for_reply(incoming, previous_count)
+                turn["replies"] = capture.wait_for_reply(before, outgoing)
+                log(f"Turno {number}: resposta do suporte capturada.")
         finally:
             browser.close()
 

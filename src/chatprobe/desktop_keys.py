@@ -41,7 +41,9 @@ class KeysTab:
         ttk.Label(form, text="Chave de API").grid(row=1, column=0, sticky="w", padx=(0, 8))
         self.key = ttk.Entry(form, show="*")
         self.key.grid(row=1, column=1, sticky="ew")
-        self.save_button = ttk.Button(form, text="Salvar", command=self.save)
+        self.save_button = ttk.Button(
+            form, text="Salvar chave", command=self.save, style="Primary.TButton",
+        )
         self.save_button.grid(row=1, column=2, padx=(8, 0))
 
         self.status = tk.StringVar()
@@ -113,12 +115,14 @@ class KeysTab:
             self.status.set("Informe a chave de API para salvar.")
             return
         try:
+            if provider == "groq":
+                groq_api.validate_key_format(key)
             if self.credentials.exists(provider, name) and not messagebox.askyesno(
                 "Substituir chave", f'Deseja substituir a chave "{name}"?', parent=self.tab,
             ):
                 return
             self.credentials.save(provider, key, name)
-        except ValueError as error:
+        except (ValueError, groq_api.GroqError) as error:
             self.status.set(str(error))
         except OSError:
             self.status.set("O Windows não conseguiu salvar a chave.")
