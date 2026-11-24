@@ -4,7 +4,7 @@ import json
 from contextlib import closing
 from http.client import HTTPConnection, HTTPException
 
-from src.chatprobe.model_actions import ACTION_SCHEMA, action_messages, decode_action
+from src.chatprobe.model_actions import ACTION_SCHEMA, ModelDecision, action_messages, decode_action, token_usage
 
 
 class OllamaError(Exception):
@@ -64,6 +64,8 @@ def next_action(model, objective, turns, *, product=None, rejected_message=None,
     if isinstance(result, dict) and result.get("done_reason") == "length":
         raise OllamaError("A resposta do Ollama atingiu o limite de geração de uma mensagem.")
     try:
-        return decode_action(result["message"]["content"])
+        decision = decode_action(result["message"]["content"])
+        usage = token_usage(result, "prompt_eval_count", "eval_count")
+        return ModelDecision(*decision, usage)
     except (AttributeError, KeyError, TypeError, ValueError):
         raise OllamaError("O Ollama não retornou uma ação válida para o teste.") from None

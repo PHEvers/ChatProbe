@@ -7,7 +7,7 @@ from threading import Event, Lock
 from unicodedata import combining, normalize
 from uuid import uuid4
 
-from src.chatprobe import groq_api, ollama_api
+from src.chatprobe.providers import ProviderError, legacy_metadata, legacy_provider, provider_failure
 from src.chatprobe.browser import smoke
 from src.chatprobe.browser.replies import message_text_key
 from src.chatprobe.browser.timing import ExecutionTiming
@@ -97,16 +97,17 @@ class OpeningVariations:
 
 def run_test(number, url, scenario, objective, key, paused, events, *, product=smoke.DEFAULT_PRODUCT,
              customer_name=None, opening_variations=None, ollama_model=None, headless=False,
-             max_customer_messages=DEFAULT_MAX_CUSTOMER_MESSAGES, control=None, store=None, batch_id=None):
+             max_customer_messages=DEFAULT_MAX_CUSTOMER_MESSAGES, control=None, store=None, batch_id=None, ai_provider=None):
     timing = ExecutionTiming()
     turns = []
     status = "completed"
     detail = ""
     reason = "completed"
     name_sent = False
-    provider = "o Ollama" if ollama_model else "a Groq"
-    next_action = ollama_api.next_action if ollama_model else groq_api.next_action
-    model_or_key = ollama_model or key
+    provider = ai_provider.profile.name if ai_provider else "Ollama" if ollama_model else "Groq"
+    generate = ai_provider.generate if ai_provider else legacy_provider(key, ollama_model) if key or ollama_model else None
+    metadata = ai_provider.profile.metadata() if ai_provider else legacy_metadata(key, ollama_model)
+    usage = {}
     test_id = None
 
     def persist(operation, *args):
@@ -121,8 +122,8 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
             return None
 
     if store is not None:
-        mode = "ollama" if ollama_model else "groq" if key else "json"
-        test_id = persist(store.start_test, batch_id or uuid4().hex, number, mode, timing.started_at)
+        mode = "ai" if ai_provider else "ollama" if ollama_model else "groq" if key else "json"
+        test_id = persist(store.start_test, batch_id or uuid4().hex, number, mode, timing.started_at, metadata)
 
     def save_turn(turn_number, turn):
         if store is not None:
@@ -164,11 +165,14 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
         options = {}
         for attempt in range(2):
             checkpoint()
-            progress(f"Aguardando a próxima ação d{provider}." if attempt == 0
+            progress(f"Aguardando a próxima ação de {provider}." if attempt == 0
                      else f"{provider.capitalize()} sugeriu repetir uma mensagem. Solicitando nova resposta.")
             if variation is not None:
                 options["opening_variation"] = variation.context(number)
-            action, text = next_action(model_or_key, objective, history, product=product, **options)
+            decision = generate(objective, history, product=product, **options)
+            for metric, count in decision.usage.items():
+                usage[metric] = usage.get(metric, 0) + count
+            action, text = decision.kind, decision.text
             checkpoint()
             if action in ("stop", "interrupt"):
                 if not history:
@@ -200,20 +204,34 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
         if store is not None:
             browser_options["on_turn"] = save_turn
         smoke.main(args, log=progress, scenario=scenario, turns=turns,
-                   next_message=next_message if model_or_key else None, **browser_options)
+                   next_message=next_message if generate else None, **browser_options)
     except BatchStopped:
         status, reason, detail = "stopped", "interrupted", "Teste interrompido a pedido do usuário."
-    except (groq_api.GroqLimitError, ollama_api.OllamaLimitError) as error:
-        paused.set()
-        status, reason, detail = "rate_limited", "api_limit", str(error)
-        events.put(("limit", detail))
+    except ProviderError as error:
+        detail = str(error)
+        if error.code == "rate_limit":
+            paused.set()
+            status, reason = "rate_limited", "api_limit"
+            events.put(("limit", detail))
+        else:
+            status, reason = "error", "technical_error"
     except BatchPaused:
-        status, reason, detail = "paused", "api_limit", f"Lote pausado após atingir um limite d{provider}."
+        status, reason, detail = "paused", "api_limit", f"Lote pausado após atingir um limite de {provider}."
     except (Exception, SystemExit) as error:
-        status, reason, detail = "error", "technical_error", str(error)
+        failure = provider_failure(error)
+        if failure and failure.code == "rate_limit":
+            paused.set()
+            status, reason, detail = "rate_limited", "api_limit", str(failure)
+            events.put(("limit", detail))
+        else:
+            status, reason, detail = "error", "technical_error", str(error)
 
     result = {"test": number, "status": status, "termination_reason": reason, "turns": turns,
               "detail": detail, **timing.fields()}
+    if metadata is not None:
+        result["provider"] = metadata
+        if usage:
+            result["token_usage"] = usage
     if test_id is not None:
         result["id"] = test_id
     if store is not None:
@@ -224,10 +242,10 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
 def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=None,
               product=smoke.DEFAULT_PRODUCT, customer_name=None, ollama_model=None,
               max_customer_messages=DEFAULT_MAX_CUSTOMER_MESSAGES, test_inputs=None, headless=False,
-              control=None, database_path=None):
+              control=None, database_path=None, ai_provider=None):
     paused = Event()
     run_control = control if control is not None else BatchControl()
-    guided = bool(key or ollama_model)
+    guided = bool(ai_provider or key or ollama_model)
     opening_variations = OpeningVariations() if guided and test_inputs is None and total > 1 else None
     try:
         if guided and max_customer_messages < 1:
@@ -254,7 +272,7 @@ def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=
                                          paused, events, product=product, customer_name=customer_name,
                                          opening_variations=opening_variations, ollama_model=ollama_model,
                                          headless=headless, max_customer_messages=max_customer_messages,
-                                         control=control, store=store, batch_id=batch_id)
+                                         control=control, store=store, batch_id=batch_id, ai_provider=ai_provider)
                     running.add(future)
                     number += 1
                 if running:

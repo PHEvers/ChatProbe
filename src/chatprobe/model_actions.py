@@ -61,3 +61,24 @@ def decode_action(content):
     if action in ("send", "stop", "interrupt") and text:
         return action, text
     raise ValueError("Ação inválida para o teste.")
+
+
+class ModelDecision(tuple):
+    """Ação legada de dois itens com métricas opcionais."""
+
+    def __new__(cls, action, text, usage):
+        decision = super().__new__(cls, (action, text))
+        decision.usage = usage
+        return decision
+
+
+def token_usage(data, input_key, output_key, total_key=None):
+    if not isinstance(data, dict):
+        return {}
+    fields = {"input_tokens": data.get(input_key), "output_tokens": data.get(output_key)}
+    if total_key:
+        fields["total_tokens"] = data.get(total_key)
+    counts = {key: value for key, value in fields.items() if type(value) is int and value >= 0}
+    if "total_tokens" not in counts and {"input_tokens", "output_tokens"} <= counts.keys():
+        counts["total_tokens"] = counts["input_tokens"] + counts["output_tokens"]
+    return counts

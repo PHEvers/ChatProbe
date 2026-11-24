@@ -5,7 +5,7 @@ from http.client import HTTPException
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from src.chatprobe.model_actions import ACTION_SCHEMA, action_messages, decode_action
+from src.chatprobe.model_actions import ACTION_SCHEMA, ModelDecision, action_messages, decode_action, token_usage
 
 
 BASE_URL = "https://api.groq.com/openai/v1"
@@ -120,7 +120,9 @@ def next_action(key, objective, turns, *, product=None, rejected_message=None, o
         choice = result["choices"][0]
         if choice.get("finish_reason") == "length":
             raise GroqError("A resposta do modelo atingiu o limite de tokens para uma mensagem.")
-        return decode_action(choice["message"]["content"])
+        decision = decode_action(choice["message"]["content"])
+        usage = token_usage(result.get("usage"), "prompt_tokens", "completion_tokens", "total_tokens")
+        return ModelDecision(*decision, usage)
     except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         pass
     raise GroqError("A Groq não retornou uma ação válida para o teste.")

@@ -58,6 +58,10 @@ Nas duas abas de execução, **Pausar** deixa os testes ativos terminarem e susp
 
 Para rodar a janela desktop diretamente no ambiente do WSL já preparado com Playwright e Chromium, use `python -m app.desktop` na raiz do projeto.
 
+## Configurar provedores de IA
+
+Em **Configurações → Provedores de IA**, cadastre um perfil e selecione um modelo. Use o modo **Provedor de IA** para executar com o perfil padrão ou escolher outro nas abas **Teste** e **Testes noturnos**. Há predefinições para APIs compatíveis com Chat Completions, Ollama, Google Gemini e Anthropic Claude. Os adaptadores Gemini e Claude ainda aguardam validação com contas reais. Consulte o [guia da Fase 2](docs/fase-2-provedores.md).
+
 ## Interface Streamlit
 
 No WSL, ative o ambiente virtual e abra o ChatProbe:

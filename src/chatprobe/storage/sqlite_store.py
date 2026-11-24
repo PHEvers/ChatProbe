@@ -1,5 +1,6 @@
 """Armazenamento local de execuções com migrações transacionais."""
 
+import json
 import sqlite3
 from contextlib import closing, contextmanager
 from uuid import uuid4
@@ -51,6 +52,10 @@ MIGRATIONS = (
             updated_at TEXT NOT NULL
         )""",
     ),
+    (
+        "ALTER TABLE tests ADD COLUMN provider_json TEXT",
+        "ALTER TABLE tests ADD COLUMN token_usage_json TEXT",
+    ),
 )
 
 
@@ -76,13 +81,13 @@ class RunStore:
             with connection:
                 yield connection
 
-    def start_test(self, batch_id, number, mode, started_at):
+    def start_test(self, batch_id, number, mode, started_at, provider=None):
         test_id = uuid4().hex
         with self.transaction() as connection:
             connection.execute(
-                """INSERT INTO tests (id, batch_id, test_number, mode, started_at, status)
-                   VALUES (?, ?, ?, ?, ?, 'running')""",
-                (test_id, batch_id, number, mode, started_at),
+                """INSERT INTO tests (id, batch_id, test_number, mode, started_at, status, provider_json)
+                   VALUES (?, ?, ?, ?, ?, 'running', ?)""",
+                (test_id, batch_id, number, mode, started_at, json.dumps(provider) if provider else None),
             )
             connection.execute(
                 "INSERT INTO events (test_id, kind, occurred_at) VALUES (?, 'started', ?)",
@@ -119,9 +124,10 @@ class RunStore:
         with self.transaction() as connection:
             connection.execute(
                 """UPDATE tests SET ended_at = ?, duration_seconds = ?, status = ?,
-                   termination_reason = ? WHERE id = ?""",
+                   termination_reason = ?, token_usage_json = ? WHERE id = ?""",
                 (result["ended_at"], result["duration_seconds"], result["status"],
-                 result["termination_reason"], test_id),
+                 result["termination_reason"],
+                 json.dumps(result["token_usage"]) if "token_usage" in result else None, test_id),
             )
             connection.execute(
                 "INSERT INTO events (test_id, kind, occurred_at) VALUES (?, 'finished', ?)",

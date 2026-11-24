@@ -21,3 +21,6 @@ playwright/.auth/
 logs/
 reports/
 screenshots/
+
+# Catálogo pessoal de provedores
+providers.json

@@ -117,7 +117,7 @@ class PersistenceTests(unittest.TestCase):
     def test_fresh_database_migrates_and_is_reopenable(self):
         RunStore(self.path)
         RunStore(self.path)
-        self.assertEqual(self.query("PRAGMA user_version"), [(2,)])
+        self.assertEqual(self.query("PRAGMA user_version"), [(len(MIGRATIONS),)])
         self.assertEqual(self.query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"),
                          [("events",), ("messages",), ("prompts",), ("tests",)])
 
@@ -131,7 +131,7 @@ class PersistenceTests(unittest.TestCase):
                    VALUES ('original', 'lote', 1, 'json', '2026-01-01T00:00:00+00:00', 'completed')""",
             )
         RunStore(self.path)
-        self.assertEqual(self.query("PRAGMA user_version"), [(2,)])
+        self.assertEqual(self.query("PRAGMA user_version"), [(len(MIGRATIONS),)])
         self.assertEqual(self.query("SELECT id, status FROM tests"), [("original", "completed")])
         self.assertEqual(self.query("SELECT COUNT(*) FROM prompts"), [(0,)])
 

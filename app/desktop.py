@@ -19,8 +19,11 @@ from src.chatprobe.chat_url import validate_chat_url
 from src.chatprobe.desktop_conversation import ConversationView
 from src.chatprobe.desktop_keys import KeysTab
 from src.chatprobe.desktop_night_queue import NightQueue
+from src.chatprobe.desktop_providers import ProviderManager
 from src.chatprobe.desktop_preferences import load_preferences, save_preferences, save_report, write_text_atomically
 from src.chatprobe.desktop_theme import DesktopTheme
+from src.chatprobe.provider_catalog import ProviderCatalog
+from src.chatprobe.providers import ProviderError
 from src.chatprobe.runner import batch
 from src.chatprobe.runner.reports import TERMINATION_LABELS, execution_summary, legacy_conversation
 from src.chatprobe.storage.sqlite_store import DEFAULT_DATABASE
@@ -32,6 +35,8 @@ EXAMPLE = RESOURCE_ROOT / "examples/prompts/cupom-nao-impresso.json"
 JSON_MODE = "Roteiro JSON"
 GROQ_MODE = "Groq"
 OLLAMA_MODE = "Ollama"
+AI_MODE = "Provedor de IA"
+DEFAULT_PROVIDER_LABEL = "Usar provedor padrão"
 STATUS_LABELS = {
     "completed": "Concluído", "interrupted": "Teste interrompido",
     "error": "Erro de execução", "rate_limited": "Limite de API", "paused": "Pausado",
@@ -53,8 +58,17 @@ class ChatProbeWindow:
         self.pause_buttons = []
         self.stop_buttons = []
         self.credentials = WindowsCredentials() if sys.platform == "win32" else None
-        self.modes = (GROQ_MODE, OLLAMA_MODE, JSON_MODE) if self.credentials else (JSON_MODE, OLLAMA_MODE)
+        self.modes = (GROQ_MODE, OLLAMA_MODE, JSON_MODE, AI_MODE) if self.credentials else (
+            JSON_MODE, AI_MODE, OLLAMA_MODE,
+        )
         self.preferences = load_preferences()
+        self.provider_fields = []
+        self.provider_manager = None
+        try:
+            self.catalog = ProviderCatalog(self.credentials, legacy_ollama_model=self.preferences.ollama_model,
+                                           legacy_mode=self.preferences.mode)
+        except (OSError, ValueError, TypeError, KeyError):
+            self.catalog = None
         self.mode = self.preferences.mode if self.preferences.mode in self.modes else self.modes[0]
         self.theme = DesktopTheme(root)
         self.drafts = {
@@ -65,7 +79,7 @@ class ChatProbeWindow:
                 "Encerre quando ele explicar como conferir a configuração da impressora."
             ),
         }
-        self.drafts[OLLAMA_MODE] = self.drafts[GROQ_MODE]
+        self.drafts[OLLAMA_MODE] = self.drafts[AI_MODE] = self.drafts[GROQ_MODE]
         root.title("ChatProbe")
         root.geometry("1080x690")
         root.minsize(800, 640)
@@ -100,7 +114,7 @@ class ChatProbeWindow:
         settings = ttk.Labelframe(execution, text="Ajustes do teste", padding=(10, 6))
         settings.pack(fill="x", pady=(0, 8))
         settings.columnconfigure(1, weight=1)
-        self.build_profile_link(settings)
+        self.test_provider = self.build_profile_link(settings)
         ttk.Label(settings, text="Quantidade de testes").grid(
             row=1, column=0, padx=(0, 10), pady=(5, 0), sticky="w",
         )
@@ -175,6 +189,7 @@ class ChatProbeWindow:
         columns.pack(fill="both", expand=True)
         self.build_night_tab(night_tab)
         self.build_settings(self.settings_tab)
+        self.refresh_providers()
         self.show_mode_fields()
         self.apply_theme()
 
@@ -185,11 +200,35 @@ class ChatProbeWindow:
         ttk.Button(profile, text="Configurações", command=lambda: self.tabs.select(self.settings_tab)).pack(
             side="right", padx=(8, 0),
         )
+        field = ttk.Combobox(profile, state="readonly", width=23)
+        self.provider_fields.append(field)
+        return field
+
+    def refresh_providers(self):
+        profiles = self.catalog.profiles.values() if self.catalog else ()
+        self.provider_labels = {f"{p.name} · {p.id}": p.id for p in profiles}
+        choices = (DEFAULT_PROVIDER_LABEL, *self.provider_labels)
+        for field in self.provider_fields:
+            field.configure(values=choices)
+            if field.get() not in choices:
+                field.set(DEFAULT_PROVIDER_LABEL)
+        if hasattr(self, "ollama_model"):
+            self.update_profile_summary()
+
+    def open_provider_manager(self):
+        if self.catalog is None:
+            messagebox.showerror("Provedores de IA", "Não foi possível carregar o catálogo local.",
+                                 parent=self.root)
+            return
+        if self.provider_manager is None or not self.provider_manager.winfo_exists():
+            self.provider_manager = ProviderManager(self.root, self.catalog, self.refresh_providers)
+        else:
+            self.provider_manager.lift()
 
     def build_night_tab(self, tab):
         controls = ttk.Labelframe(tab, text="Ajustes do lote", padding=8)
         controls.pack(fill="x", pady=(0, 8))
-        self.build_profile_link(controls)
+        self.night_provider = self.build_profile_link(controls)
         controls.grid_columnconfigure(1, weight=1)
         parameters = ttk.Frame(controls)
         parameters.grid(row=1, column=0, columnspan=2, sticky="ew")
@@ -293,8 +332,13 @@ class ChatProbeWindow:
         ttk.Checkbutton(options, text="Modo escuro", variable=self.dark_mode,
                         command=self.change_theme).pack(anchor="w", pady=(0, 10))
 
-        keys_tab = ttk.Labelframe(tab, text="Chaves de API", padding=8)
-        keys_tab.grid(row=0, column=1, sticky="new")
+        management = ttk.Frame(tab)
+        management.grid(row=0, column=1, sticky="new")
+        providers = ttk.Labelframe(management, text="Provedores de IA", padding=8)
+        providers.pack(fill="x", pady=(0, 10))
+        ttk.Button(providers, text="Gerenciar provedores…", command=self.open_provider_manager).pack(anchor="w")
+        keys_tab = ttk.Labelframe(management, text="Chaves de API existentes", padding=8)
+        keys_tab.pack(fill="x")
         if self.credentials:
             self.keys_tab = KeysTab(keys_tab, self.credentials, self.refresh_test_keys)
         else:
@@ -373,13 +417,22 @@ class ChatProbeWindow:
 
     def update_profile_summary(self):
         model = self.ollama_model.get() if self.mode == OLLAMA_MODE else ""
-        self.profile_summary.set(f"Ollama · {model}" if model else self.mode)
+        default = self.catalog.profiles.get(self.catalog.default) if self.catalog else None
+        if self.mode == AI_MODE and default:
+            self.profile_summary.set(f"Padrão · {default.name}")
+        else:
+            self.profile_summary.set(f"Ollama · {model}" if model else self.mode)
 
     def show_mode_fields(self):
         for widget in (self.groq_key_label, self.groq_key, self.groq_notice,
                        self.ollama_model_label, self.ollama_model, self.ollama_notice,
                        self.message_limit_label, self.message_limit_field):
             widget.grid_remove()
+        for field in self.provider_fields:
+            if self.mode == AI_MODE:
+                field.pack(side="left", fill="x", expand=True, padx=(8, 0))
+            else:
+                field.pack_forget()
         input_label = JSON_MODE if self.mode == JSON_MODE else "Prompt inicial"
         self.editor.configure(text=input_label)
         self.night_queue.form.configure(text=input_label)
@@ -477,8 +530,11 @@ class ChatProbeWindow:
                 test_inputs.append((None, text))
 
         try:
-            options = self.provider_options(self.night_limit if nightly else self.message_limit_field)
-        except (ValueError, groq_api.GroqError) as error:
+            options = self.provider_options(
+                self.night_limit if nightly else self.message_limit_field,
+                self.night_provider if nightly else self.test_provider,
+            )
+        except (ValueError, groq_api.GroqError, ProviderError) as error:
             self.status.set(str(error))
             return
         if not self.save_chat_url() or not self.save_customer_name():
@@ -512,7 +568,7 @@ class ChatProbeWindow:
         ).start()
         self.root.after(100, self.poll)
 
-    def provider_options(self, message_limit):
+    def provider_options(self, message_limit, provider_field):
         max_customer_messages = batch.DEFAULT_MAX_CUSTOMER_MESSAGES
         if self.mode != JSON_MODE:
             try:
@@ -522,7 +578,18 @@ class ChatProbeWindow:
             except ValueError:
                 raise ValueError("Informe um limite inteiro de pelo menos 1 mensagem do cliente.") from None
         options = {"max_customer_messages": max_customer_messages}
-        if self.mode == GROQ_MODE:
+        if self.mode == AI_MODE:
+            if self.catalog is None:
+                raise ValueError("Não foi possível abrir o catálogo de provedores.")
+            provider_id = self.provider_labels.get(provider_field.get(), self.catalog.default)
+            profile = self.catalog.profiles.get(provider_id)
+            if profile is None or not profile.model:
+                raise ValueError("Configure um provedor e selecione um modelo em Configurações.")
+            try:
+                options["ai_provider"] = self.catalog.resolve(profile)
+            except (OSError, UnicodeError):
+                raise ValueError("Não foi possível ler a credencial do provedor.") from None
+        elif self.mode == GROQ_MODE:
             key_name = self.groq_key.get()
             if not key_name:
                 raise ValueError("Salve uma chave em Configurações → Chaves de API e selecione-a para o teste.")
@@ -551,7 +618,7 @@ class ChatProbeWindow:
         for widget in (self.run_button, self.night_run_button, self.mode_field, self.groq_key,
                        self.ollama_model, self.total_field, self.parallel_field, self.customer_name_field,
                        self.product_field, self.message_limit_field, self.night_product,
-                       self.night_parallel, self.night_limit):
+                       self.night_parallel, self.night_limit, *self.provider_fields):
             widget.state(["disabled" if running else "!disabled"])
         self.night_queue.set_running(running)
         self.run_status.set("")
