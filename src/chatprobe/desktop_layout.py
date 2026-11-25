@@ -8,6 +8,7 @@ from src.chatprobe.browser.version import VERSION
 
 ICONS = {
     "play": ("#......", "###....", "#####..", "#######", "#####..", "###....", "#......"),
+    "history": ("..#####..", ".#.....#.", "#...#...#", "#...###.#", "#.......#", ".#.....#.", "..#####.."),
     "queue": ("##.########", "...........", "##.########", "...........", "##.########"),
     "settings": ("..#.....#..", "###########", "..#.....#..", ".....#.....", "###########", ".....#....."),
 }
@@ -16,13 +17,13 @@ ICONS = {
 class Navigation(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
-        self.header = ttk.Frame(self, style="Panel.TFrame", padding=(12, 8))
+        self.header = ttk.Frame(self, padding=(10, 6))
         self.header.pack(fill="x", pady=(0, 12))
-        company = ttk.Frame(self.header, style="Panel.TFrame")
+        company = ttk.Frame(self.header)
         company.pack(side="right", padx=(12, 4))
         ttk.Label(company, text="ChatProbe", style="Brand.TLabel").pack(anchor="e")
         ttk.Label(company, text=f"v{VERSION}", style="Version.TLabel").pack(anchor="e", pady=(2, 0))
-        self.buttons = ttk.Frame(self.header, style="Panel.TFrame")
+        self.buttons = ttk.Frame(self.header)
         self.buttons.pack(side="left", fill="y")
         self.body = ttk.Frame(self)
         self.body.pack(fill="both", expand=True)
@@ -31,12 +32,13 @@ class Navigation(ttk.Frame):
         self.pages = {}
         self.icons = []
         self.current = None
+        self.on_select = None
 
     def add(self, name, icon):
         page = ttk.Frame(self.body)
         picture = self.make_icon(icon)
         self.icons.append(picture)
-        button = ttk.Button(self.buttons, text=f"  {name}", image=picture, compound="left", style="Navigation.TButton",
+        button = ttk.Button(self.buttons, text=name, image=picture, compound="top", style="Navigation.TButton",
                             command=lambda: self.select(page))
         button.pack(side="left", padx=(0, 4), fill="y")
         self.pages[page] = button
@@ -67,6 +69,8 @@ class Navigation(ttk.Frame):
         page.grid()
         self.pages[page].state(["selected"])
         self.current = page
+        if self.on_select is not None:
+            self.on_select(page)
 
 
 class ScrollPanel(ttk.Frame):

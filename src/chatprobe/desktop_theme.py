@@ -27,8 +27,8 @@ PALETTES = {
         "accent": "#2563eb", "accent_hover": "#1e50bd", "warning": "#f5b64f",
         "success": "#50d582", "error": "#ff8a91", "selection_text": "#25569b",
         "active": "#93b8ff",
-        "user_speaker": "#a6ceff", "user_message": "#29446c",
-        "bot_speaker": "#9ddfc6", "bot_message": "#25453e",
+        "user_speaker": "#b6cae1", "user_message": "#244977",
+        "bot_speaker": "#b6cae1", "bot_message": "#182335",
     },
 }
 
@@ -67,15 +67,19 @@ class DesktopTheme:
             "Panel.TLabel": {"configure": {"background": surface}},
             "PanelMuted.TLabel": {"configure": {"background": surface, "foreground": muted}},
             "PanelWarning.TLabel": {"configure": {"background": surface, "foreground": colors["warning"]}},
-            "Brand.TLabel": {"configure": {"background": surface, "font": (family, 20, "bold")}},
+            "Section.TLabel": {"configure": {"font": (family, 14, "bold")}},
+            "PanelHeading.TLabel": {"configure": {"background": surface, "font": (family, 11, "bold")}},
+            "Card.TLabelframe": {"configure": {"background": surface, "bordercolor": surface}},
+            "Card.TLabelframe.Label": {"configure": {"background": surface, "font": (family, 11, "bold")}},
+            "Brand.TLabel": {"configure": {"background": canvas, "font": (family, 20, "bold")}},
             "Version.TLabel": {"configure": {"background": selected, "foreground": text,
                                               "padding": (7, 2), "font": (family, 9, "bold")}},
             "State.TLabel": {"configure": {"background": surface, "foreground": text,
                                             "font": (family, 11, "bold")}},
             "Navigation.TButton": {
-                "configure": {"padding": (15, 10), "background": surface, "font": (family, 11, "bold")},
+                "configure": {"padding": (11, 10), "background": surface, "font": (family, 11, "bold")},
                 "map": {"background": [("selected", selected), ("active", hover)],
-                        "foreground": [("selected", colors["active"])]},
+                        "foreground": [("selected", text)]},
             },
             "Horizontal.TProgressbar": {
                 "configure": {"background": accent, "bordercolor": surface, "troughcolor": border,
@@ -111,6 +115,7 @@ class DesktopTheme:
                         "fieldbackground": [("disabled", canvas), ("readonly", surface)],
                         "arrowcolor": [("disabled", muted), ("!disabled", text)]},
             },
+            "History.TNotebook.Tab": {"configure": {"padding": (7, 5)}},
             "TNotebook": {"configure": {"tabmargins": (0, 2, 0, 0)}},
             "TNotebook.Tab": {
                 "configure": {"padding": (16, 8)},

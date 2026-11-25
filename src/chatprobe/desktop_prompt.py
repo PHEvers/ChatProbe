@@ -9,9 +9,10 @@ def token_estimate(text):
 
 
 class PromptEditor(ttk.Frame):
-    def __init__(self, parent, *, title=True, expandable=True, rows=5):
+    def __init__(self, parent, *, title=True, expandable=True, rows=5, readonly=False):
         super().__init__(parent)
         self.palette = None
+        self.readonly = readonly
         self.ai_mode = False
         self.title_var = tk.StringVar()
         self.hint = ttk.Label(self, style="Warning.TLabel", wraplength=440)
@@ -47,6 +48,10 @@ class PromptEditor(ttk.Frame):
         self.text.bind("<Control-a>", self.select_all)
         self.text.bind("<Control-Shift-e>", lambda event: self.expand() if self.expander else None)
         self.refresh_stats()
+        if readonly:
+            self.text.configure(state="disabled")
+            if self.title_entry:
+                self.title_entry.state(["readonly"])
 
     def wrap_stats(self, event):
         reserved = self.expander.winfo_reqwidth() + 8 if self.expander and self.expander.master is event.widget else 0
@@ -60,8 +65,11 @@ class PromptEditor(ttk.Frame):
         return self.text.get("1.0", "end-1c")
 
     def set_value(self, text, title=""):
+        state = self.text.cget("state")
+        self.text.configure(state="normal")
         self.text.delete("1.0", "end")
         self.text.insert("1.0", text)
+        self.text.configure(state=state)
         self.text.edit_reset()
         self.title_var.set(title)
         self.refresh_stats()
@@ -101,7 +109,7 @@ class PromptEditor(ttk.Frame):
                             highlightcolor=palette["accent"], highlightthickness=1)
 
     def expand(self):
-        if self.text.cget("state") == "disabled":
+        if self.text.cget("state") == "disabled" and not self.readonly:
             return
         parent = self.winfo_toplevel()
         popup = tk.Toplevel(parent)
@@ -111,7 +119,7 @@ class PromptEditor(ttk.Frame):
         width = min(1000, parent.winfo_screenwidth() - 100)
         height = min(750, parent.winfo_screenheight() - 120)
         popup.geometry(f"{width}x{height}+32+32")
-        enlarged = PromptEditor(popup, title=self.title_entry is not None, expandable=False)
+        enlarged = PromptEditor(popup, title=self.title_entry is not None, expandable=False, readonly=self.readonly)
         enlarged.pack(fill="both", expand=True, padx=14, pady=(14, 0))
         enlarged.set_value(self.value(), self.title_var.get())
         enlarged.set_ai_mode(self.ai_mode)
