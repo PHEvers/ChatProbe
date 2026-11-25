@@ -23,6 +23,7 @@ PRODUCT_OPTIONS = (
     DEFAULT_PRODUCT, "SELLER", "Emsys", "Posto Facil", "Autosystem Ipiranga",
     "EMSYS", "Emporio", "D-TEF", "QR LINX", "CONECTIVIDADE",
 )
+DEFAULT_CNPJ = "13041197000159"
 DEFAULT_CUSTOMER_NAME = "Pedro Teste Automatizado"
 NAME_REQUEST = re.compile(
     r"\b(?:"
@@ -97,7 +98,7 @@ def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None, 
     interruption = ""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url", help="Endereço do chat de homologação")
-    parser.add_argument("--cnpj", default="13041197000159",
+    parser.add_argument("--cnpj", default=DEFAULT_CNPJ,
                         help="CNPJ de homologação do AutoSystem (somente números)")
     parser.add_argument("--product", default=DEFAULT_PRODUCT, help="Produto selecionado na triagem")
     parser.add_argument("--customer-name", help="Nome enviado nas etapas do roteiro que pedem o nome")
