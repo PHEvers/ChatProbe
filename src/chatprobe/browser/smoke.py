@@ -10,9 +10,11 @@ from unicodedata import normalize
 if __package__:
     from .replies import LISTEN_FOR_SUPPORT, ReplyCapture, message_text_key
     from .timing import ExecutionTiming, utc_now
+    from .version import VERSION
 else:
     from replies import LISTEN_FOR_SUPPORT, ReplyCapture, message_text_key
     from timing import ExecutionTiming, utc_now
+    from version import VERSION
 
 
 DEFAULT_REPLY_SELECTOR = "p[lwc-20emgi50k8t]"
@@ -302,7 +304,7 @@ def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None, 
     if turns:
         outcome = "interrupted" if interruption else "completed"
         turns[0]["test_metadata"] = {
-            "test": 1, "status": outcome, "termination_reason": outcome,
+            "test": 1, "application_version": VERSION, "status": outcome, "termination_reason": outcome,
             "detail": interruption, **timing.fields(),
         }
     args.output.parent.mkdir(parents=True, exist_ok=True)

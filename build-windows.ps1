@@ -103,15 +103,22 @@ try {
     & $buildPython -m playwright install --no-shell chromium
     if ($LASTEXITCODE -ne 0) { throw "Não foi possível baixar o Chromium para o pacote." }
 
+    $versionFile = Join-Path $PSScriptRoot "VERSION"
+    $version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+    $versionResource = Join-Path $buildDirectory.FullName "windows-version.txt"
+    & $buildPython -m src.chatprobe.browser.version $versionResource
+    if ($LASTEXITCODE -ne 0) { throw "Não foi possível gerar o recurso de versão do Windows." }
+
     $example = Join-Path $PSScriptRoot "examples/prompts/cupom-nao-impresso.json"
     & $buildPython -m PyInstaller --noconfirm --onedir --windowed --name ChatProbe `
         --paths $PSScriptRoot --specpath build --workpath build/pyinstaller `
-        --distpath $staging.FullName `
-        --add-data "${example}:examples/prompts" app/desktop.py
+        --distpath $staging.FullName --version-file $versionResource `
+        --add-data "${versionFile}:." --add-data "${example}:examples/prompts" app/desktop.py
     if ($LASTEXITCODE -ne 0) { throw "Não foi possível gerar o ChatProbe.exe." }
 
     $package = Join-Path $staging.FullName "ChatProbe"
     $executable = Get-PackageExecutable $package
+    $bundledVersion = Join-Path $package "_internal/VERSION"
     $bundledExample = Join-Path $package "_internal/examples/prompts/cupom-nao-impresso.json"
     $bundledChromium = Join-Path $package "_internal/playwright/driver/package/.local-browsers"
     if (-not $executable -or
@@ -120,6 +127,12 @@ try {
         -not (Get-ChildItem -LiteralPath $bundledChromium -Filter chrome.exe -Recurse |
               Select-Object -First 1)) {
         throw "O pacote não contém o executável, os arquivos do Python, o roteiro de exemplo ou o Chromium."
+    }
+
+    if (-not (Test-Path -LiteralPath $bundledVersion -PathType Leaf) -or
+        (Get-Content -LiteralPath $bundledVersion -Raw).Trim() -ne $version -or
+        $executable.VersionInfo.ProductVersion -ne $version) {
+        throw "A versão do aplicativo e a do executável devem corresponder a VERSION."
     }
 
     if (-not (Test-Path -LiteralPath $OutputDirectory)) {
@@ -152,7 +165,7 @@ try {
     }
 
     Remove-OldPackages $currentPackage
-    Write-Host "Executável pronto: $(Join-Path $currentPackage 'ChatProbe.exe')"
+    Write-Host "ChatProbe $version pronto: $(Join-Path $currentPackage 'ChatProbe.exe')"
 }
 finally {
     if ($staging) {

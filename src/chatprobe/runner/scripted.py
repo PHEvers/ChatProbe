@@ -29,7 +29,7 @@ def main():
     while not events.empty():
         kind, value = events.get_nowait()
         print(value[1] if kind == "progress" else value)
-    report = legacy_conversation(result) if result["turns"] else {"tests": [result]}
+    report = legacy_conversation(result) if result["turns"] else {"application_version": result["application_version"], "tests": [result]}
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     if result["status"] == "error":
         raise SystemExit(result["detail"])
