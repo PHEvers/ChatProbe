@@ -1,12 +1,14 @@
 """Avaliação explícita da seleção do Histórico."""
 
 import json
+from collections import Counter
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from src.chatprobe.desktop_preferences import write_text_atomically
 from src.chatprobe.desktop_prompt import PromptEditor
+from src.chatprobe.history_reports import markdown_block
 from src.chatprobe.evaluation.engine import evaluate, regression
 from src.chatprobe.evaluation.store import EvaluationStore
 from src.chatprobe.runner.batch import BatchControl, BatchStopped
@@ -74,6 +76,8 @@ def evaluate_selection(view, records, catalog):
             if item.get("review"):
                 review = item["review"]
                 lines.append(f"Revisão humana · {LABELS[review['classification']]} · {review['reason']}")
+                if review.get("criteria"):
+                    lines.append("Critérios revisados · " + ", ".join(f"{key}: {value}" for key, value in review["criteria"].items()))
             if item.get("issue"):
                 lines.append(item["issue"])
             for criterion in item["results"]:
@@ -114,6 +118,8 @@ def evaluate_selection(view, records, catalog):
                 parent=popup):
                 return
             rubric["provider_id"] = profile_id
+            if "expected" not in rubric and len(records) == 1 and records[0].get("library_expected"):
+                rubric["expected"] = records[0]["library_expected"]
             rubric = store.save_rubric(scope.get(), rubric)
         except (ValueError, TypeError, OSError) as error:
             messagebox.showerror("Avaliação", str(error), parent=popup)
@@ -153,7 +159,16 @@ def evaluate_selection(view, records, catalog):
         classification = simpledialog.askstring("Revisão", "Classificação: passed, failed ou inconclusive", parent=popup)
         reason = simpledialog.askstring("Revisão", "Justificativa", parent=popup)
         if classification and reason:
-            view.submit(lambda: store.review(match["id"], classification, reason),
+            raw = simpledialog.askstring("Critérios revisados", "JSON opcional com ID e novo resultado, ou deixe vazio.",
+                                         parent=popup)
+            if raw is None:
+                return
+            try:
+                criteria = json.loads(raw) if raw.strip() else {}
+            except ValueError:
+                messagebox.showerror("Revisão", "JSON de critérios inválido.", parent=popup)
+                return
+            view.submit(lambda: store.review(match["id"], classification, reason, criteria),
                         lambda _: recent(), valid=popup.winfo_exists)
 
     def latest():
@@ -173,24 +188,56 @@ def evaluate_selection(view, records, catalog):
         key = scope.get()
         def compare(first):
             def index(rows):
-                return {item["test_snapshot"].get("library_prompt_id") or item["test_id"]: item for item in rows}
+                return {item["test_snapshot"].get("library_prompt_id") or item["prompt_hash"]: item for item in rows}
             left, right = index(first), index(current)
-            output.set_value("\n".join(f"{key} · {REGRESSIONS[regression(left.get(key),right.get(key))]}"
-                                       for key in sorted(left.keys() | right.keys())) if left else "Sem baseline.")
+            if not left:
+                output.set_value("Sem baseline.")
+                return
+            rows = {key: regression(left.get(key), right.get(key)) for key in sorted(left.keys() | right.keys())}
+            counts = Counter(rows.values())
+            brief = "\n".join(f"{REGRESSIONS[key]} · {count}" for key, count in counts.items())
+            output.set_value(brief + "\n\n" + "\n".join(f"{key} · {REGRESSIONS[value]}"
+                                                            for key, value in rows.items()))
+            chart("Regressão da seleção", {REGRESSIONS[key]: count for key, count in counts.items()})
         view.submit(lambda: store.baseline(key), compare, valid=popup.winfo_exists)
+
+    def chart(title, counts):
+        dialog = tk.Toplevel(popup)
+        dialog.title(title)
+        graph = tk.Canvas(dialog, width=470, height=max(120, len(counts) * 34 + 25), background="#1e2939")
+        graph.pack(fill="both", expand=True)
+        maximum = max(counts.values(), default=1)
+        for row, (label, count) in enumerate(counts.items(), 1):
+            y = row * 31
+            graph.create_text(12, y, text=label, fill="#f1f5f9", anchor="w")
+            right = 145 + 270 * count / maximum
+            graph.create_rectangle(145, y-9, right, y+9, fill="#2563eb", outline="")
+            graph.create_text(right + 6, y, text=str(count), fill="#f1f5f9", anchor="w")
+
+    def dashboard():
+        items = latest()
+        counts = Counter(LABELS[item.get("review", {}).get("classification", item["classification"])]
+                         for item in items)
+        counts["Não avaliado"] = len(records) - len(items)
+        chart("Avaliação da seleção", counts)
 
     def export():
         if not selection:
             return
-        path = filedialog.asksaveasfilename(parent=popup, defaultextension=".json")
+        path = filedialog.asksaveasfilename(parent=popup, defaultextension=".json", confirmoverwrite=True,
+                                            filetypes=[("JSON", "*.json"), ("Markdown", "*.md")])
         if path:
-            write_text_atomically(Path(path), json.dumps(selection, ensure_ascii=False, indent=2))
+            target = Path(path)
+            content = json.dumps(selection, ensure_ascii=False, indent=2)
+            if target.suffix.lower() == ".md":
+                content = "# Avaliações de atendimento\n\n" + markdown_block(content)
+            view.submit(lambda: write_text_atomically(target, content), lambda _: None, valid=popup.winfo_exists)
 
     toolbar = ttk.Frame(popup)
     toolbar.pack(fill="x", padx=8, pady=6)
     for label, callback in (
         ("Avaliar", start), ("Anteriores", recent), ("Revisar", review), ("Exportar", export),
-        ("Fixar baseline", lambda: baseline(True)), ("Comparar", lambda: baseline(False)),
+        ("Fixar baseline", lambda: baseline(True)), ("Comparar", lambda: baseline(False)), ("Painel", dashboard),
         ("Pausar/retomar", lambda: (control.pause() if control.ready.is_set() else control.resume()) if control else None),
         ("Parar", lambda: control.stop() if control else None),
     ):

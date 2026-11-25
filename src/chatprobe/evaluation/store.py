@@ -44,12 +44,21 @@ class EvaluationStore:
                     item["review"] = item["reviews"][-1]
         return evaluations
 
-    def review(self, evaluation_id, classification, reason):
+    def review(self, evaluation_id, classification, reason, criteria=None):
         if classification not in {"passed", "failed", "inconclusive"} or not reason.strip():
             raise ValueError("Informe classificação e justificativa.")
         with self.store.transaction() as db:
+            from src.chatprobe.evaluation.engine import STATUSES
+            row = db.execute("SELECT payload FROM evaluations WHERE id=?", (evaluation_id,)).fetchone()
+            if not row:
+                raise ValueError("Avaliação indisponível.")
+            allowed = {item["id"] for item in json.loads(row[0])["results"]}
+            if (criteria is not None and (not isinstance(criteria, dict)
+                    or any(key not in allowed or not isinstance(value, str) or value not in STATUSES
+                           for key, value in criteria.items()))):
+                raise ValueError("Revisão de critérios inválida.")
             db.execute("INSERT INTO evaluation_reviews(evaluation_id,created_at,payload) VALUES(?,?,?)",
-                       (evaluation_id, utc_now(), json.dumps({"classification": classification, "reason": reason})))
+                       (evaluation_id, utc_now(), json.dumps({"classification": classification, "reason": reason, "criteria": criteria or {}})))
 
     def baseline(self, scope, evaluations=None):
         with self.store.transaction() as db:

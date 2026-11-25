@@ -146,7 +146,7 @@ def evaluate(record, rubric, *, provider=None, ledger=None, related_profiles=(),
     if pending and provider and ledger and reference.strip():
         context = {"criteria": [asdict(item) for item in pending], "reference": reference, "messages": transcript,
                    "prompt": record.get("prompt_text"), "reason": record.get("termination_reason"),
-                   "events": record.get("events"), "expected": rubric.get("expected")}
+                   "events": record.get("events"), "expected": rubric.get("expected") or record.get("library_expected")}
         data = json.dumps(context, ensure_ascii=False)
         scopes = quota_scopes(provider.profile, provider.profile.metadata(), "", ExecutionOptions(), related_profiles)
 
