@@ -25,7 +25,8 @@ def main():
 
     events = Queue()
     store = open_store(DEFAULT_DATABASE, events)
-    result = run_test(1, args.url, scenario, "", None, Event(), events, store=store)
+    result = run_test(1, args.url, scenario, "", None, Event(), events, store=store,
+                      history_context={"prompt_text": args.scenario.read_text(encoding="utf-8")})
     while not events.empty():
         kind, value = events.get_nowait()
         print(value[1] if kind == "progress" else value)

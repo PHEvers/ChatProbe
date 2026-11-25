@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from src.chatprobe.browser.timing import utc_now
 from src.chatprobe.desktop_preferences import SETTINGS_FILE
+from src.chatprobe.storage.history_metadata import PROVIDER_FIELDS, fields, public_detail, public_settings, public_url, utc_value
 
 
 DEFAULT_DATABASE = SETTINGS_FILE.with_name("chatprobe.sqlite3")
@@ -80,6 +81,50 @@ MIGRATIONS = (
         )""",
     ),
 
+    (
+        "ALTER TABLE tests ADD COLUMN title TEXT",
+        "ALTER TABLE tests ADD COLUMN prompt_text TEXT",
+        "ALTER TABLE tests ADD COLUMN product TEXT",
+        "ALTER TABLE tests ADD COLUMN target_url TEXT",
+        "ALTER TABLE tests ADD COLUMN execution_type TEXT",
+        "ALTER TABLE tests ADD COLUMN settings_json TEXT",
+        "ALTER TABLE tests ADD COLUMN application_version TEXT",
+        "ALTER TABLE tests ADD COLUMN detail TEXT",
+        "ALTER TABLE tests ADD COLUMN wait_json TEXT",
+        "ALTER TABLE tests ADD COLUMN processing_seconds REAL",
+        "ALTER TABLE tests ADD COLUMN source_test_id TEXT REFERENCES tests(id) ON DELETE SET NULL",
+        "ALTER TABLE tests ADD COLUMN library_prompt_id TEXT",
+        "ALTER TABLE tests ADD COLUMN library_collection_id TEXT",
+        "ALTER TABLE tests ADD COLUMN library_collection_run_id TEXT",
+        "ALTER TABLE tests ADD COLUMN import_hash TEXT",
+        "ALTER TABLE tests ADD COLUMN imported_at TEXT",
+        "ALTER TABLE tests ADD COLUMN imported_metrics_json TEXT",
+        "ALTER TABLE tests ADD COLUMN interactions_recorded INTEGER",
+        "ALTER TABLE tests ADD COLUMN requests_recorded INTEGER",
+        "ALTER TABLE api_requests ADD COLUMN processing_seconds REAL",
+        "CREATE UNIQUE INDEX tests_import_hash ON tests(import_hash)",
+        "CREATE INDEX tests_by_start ON tests(started_at DESC,id DESC)",
+        "CREATE INDEX tests_by_status ON tests(status,started_at DESC)",
+        "CREATE INDEX tests_by_product ON tests(product,started_at DESC)",
+        "CREATE INDEX tests_by_provider ON tests(json_extract(provider_json,'$.name'),started_at DESC)",
+        "CREATE INDEX tests_by_model ON tests(json_extract(provider_json,'$.model'),started_at DESC)",
+        "CREATE INDEX tests_by_type ON tests(execution_type,started_at DESC)",
+        "CREATE INDEX tests_by_version ON tests(application_version,started_at DESC)",
+        "CREATE INDEX tests_by_origin ON tests(source_test_id)",
+        "CREATE INDEX api_requests_by_test ON api_requests(test_id)",
+        """UPDATE tests SET (title,prompt_text,product,execution_type,application_version) =
+           (SELECT json_extract(snapshot,'$.prompt_titles[' || (position-1) || ']'),
+              prompt,json_extract(snapshot,'$.product'),'queue',json_extract(result,'$.application_version')
+            FROM queue_items JOIN execution_queues ON execution_queues.id=queue_items.queue_id
+            WHERE queue_id=tests.batch_id AND position=tests.test_number)
+           WHERE EXISTS (SELECT 1 FROM queue_items WHERE queue_id=tests.batch_id AND position=tests.test_number)""",
+        """UPDATE tests SET started_at=substr(started_at,1,23)||'000'||substr(started_at,24)
+            WHERE length(started_at)=29 AND started_at LIKE '%+00:00'""",
+        """UPDATE tests SET interactions_recorded=(SELECT COUNT(*) FROM messages
+            WHERE messages.test_id=tests.id AND role='user')
+            WHERE EXISTS (SELECT 1 FROM messages WHERE messages.test_id=tests.id)""",
+    ),
+
 )
 
 
@@ -106,13 +151,24 @@ class RunStore:
             with connection:
                 yield connection
 
-    def start_test(self, batch_id, number, mode, started_at, provider=None):
+    def start_test(self, batch_id, number, mode, started_at, provider=None, history=None):
         test_id = uuid4().hex
+        history = history or {}
         with self.transaction() as connection:
+            source = history.get("source_test_id")
+            if source and not connection.execute("SELECT 1 FROM tests WHERE id=?", (source,)).fetchone():
+                source = None
             connection.execute(
-                """INSERT INTO tests (id, batch_id, test_number, mode, started_at, status, provider_json)
-                   VALUES (?, ?, ?, ?, ?, 'running', ?)""",
-                (test_id, batch_id, number, mode, started_at, json.dumps(provider) if provider else None),
+                """INSERT INTO tests (id,batch_id,test_number,mode,started_at,status,provider_json,
+                   title,prompt_text,product,target_url,execution_type,settings_json,application_version,
+                   source_test_id,interactions_recorded,requests_recorded)
+                   VALUES (?,?,?,?,?,'running',?,?,?,?,?,?,?,?,?,0,?)""",
+                (test_id, batch_id, number, mode, utc_value(started_at) or started_at,
+                 json.dumps(fields(provider, PROVIDER_FIELDS)) if provider else None,
+                 history.get("title"), history.get("prompt_text"), history.get("product"),
+                 public_url(history.get("url")), history.get("execution_type"),
+                 json.dumps(public_settings(history.get("settings"))), history.get("application_version"), source,
+                 0 if mode == "json" else None),
             )
             connection.execute(
                 "INSERT INTO events (test_id, kind, occurred_at) VALUES (?, 'started', ?)",
@@ -132,27 +188,33 @@ class RunStore:
                 "DELETE FROM messages WHERE test_id = ? AND turn_number = ? AND role = 'bot'",
                 (test_id, number),
             )
+            connection.execute("UPDATE tests SET interactions_recorded=MAX(COALESCE(interactions_recorded,0),?) WHERE id=?",
+                               (number, test_id))
             connection.executemany(
                 "INSERT INTO messages VALUES (?, ?, 'bot', ?, ?, ?)",
                 ((test_id, number, position, text, timestamp)
                  for position, (text, timestamp) in enumerate(replies)),
             )
 
-    def event(self, test_id, kind):
+    def event(self, test_id, kind, stamp=None):
         with self.transaction() as connection:
             connection.execute(
                 "INSERT INTO events (test_id, kind, occurred_at) VALUES (?, ?, ?)",
-                (test_id, kind, utc_now()),
+                (test_id, kind, stamp or utc_now()),
             )
 
     def finish_test(self, test_id, result):
         with self.transaction() as connection:
             connection.execute(
                 """UPDATE tests SET ended_at = ?, duration_seconds = ?, status = ?,
-                   termination_reason = ?, token_usage_json = ? WHERE id = ?""",
-                (result["ended_at"], result["duration_seconds"], result["status"],
+                   termination_reason = ?, token_usage_json = ?, detail=?, wait_json=?,
+                   processing_seconds=?, requests_recorded=COALESCE(?,requests_recorded) WHERE id = ?""",
+                (utc_value(result["ended_at"]) or result["ended_at"], result["duration_seconds"], result["status"],
                  result["termination_reason"],
-                 json.dumps(result["token_usage"]) if "token_usage" in result else None, test_id),
+                 json.dumps(result["token_usage"]) if "token_usage" in result else None,
+                 public_detail(result.get("detail")), json.dumps(result.get("wait_seconds")),
+                 result.get("processing_seconds"), len(result["api_calls"]) if "api_calls" in result else None,
+                 test_id),
             )
             connection.execute(
                 "INSERT INTO events (test_id, kind, occurred_at) VALUES (?, 'finished', ?)",
