@@ -109,11 +109,12 @@ try {
     & $buildPython -m src.chatprobe.browser.version $versionResource
     if ($LASTEXITCODE -ne 0) { throw "Não foi possível gerar o recurso de versão do Windows." }
 
+    $helpFile = Join-Path $PSScriptRoot "docs/fase-7-distribuicao.md"
     $example = Join-Path $PSScriptRoot "examples/prompts/cupom-nao-impresso.json"
     & $buildPython -m PyInstaller --noconfirm --onedir --windowed --name ChatProbe `
         --paths $PSScriptRoot --specpath build --workpath build/pyinstaller `
         --distpath $staging.FullName --version-file $versionResource `
-        --add-data "${versionFile}:." --add-data "${example}:examples/prompts" app/desktop.py
+        --add-data "${versionFile}:." --add-data "${helpFile}:docs" --add-data "${example}:examples/prompts" app/desktop.py
     if ($LASTEXITCODE -ne 0) { throw "Não foi possível gerar o ChatProbe.exe." }
 
     $package = Join-Path $staging.FullName "ChatProbe"
@@ -134,6 +135,11 @@ try {
         $executable.VersionInfo.ProductVersion -ne $version) {
         throw "A versão do aplicativo e a do executável devem corresponder a VERSION."
     }
+
+    $distributionZip = Join-Path $staging.FullName 'ChatProbe.zip'
+    Compress-Archive -LiteralPath $package -DestinationPath $distributionZip
+    & $buildPython -m zipfile -t $distributionZip
+    if ($LASTEXITCODE -ne 0) { throw "O ZIP do ChatProbe é inválido." }
 
     if (-not (Test-Path -LiteralPath $OutputDirectory)) {
         New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
@@ -164,7 +170,13 @@ try {
         throw
     }
 
+    $zipName = "ChatProbe-$version-$(Get-Date -Format 'yyyyMMdd-HHmmss-fff').zip"
+    Move-Item -LiteralPath $distributionZip -Destination (Join-Path $distPath $zipName)
     Remove-OldPackages $currentPackage
+    Get-ChildItem -LiteralPath $distPath -Filter 'ChatProbe-*.zip' -File |
+        Where-Object { $_.Name -match '^ChatProbe-\d+\.\d+\.\d+-\d{8}-\d{6}-\d{3}\.zip$' -and
+            -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
+        Sort-Object LastWriteTimeUtc -Descending | Select-Object -Skip 3 | Remove-Item
     Write-Host "ChatProbe $version pronto: $(Join-Path $currentPackage 'ChatProbe.exe')"
 }
 finally {

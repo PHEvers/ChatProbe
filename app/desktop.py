@@ -24,6 +24,7 @@ from src.chatprobe.desktop_conversation import ConversationView
 from src.chatprobe.desktop_keys import KeysTab
 from src.chatprobe.desktop_execution import ExecutionDialog
 from src.chatprobe.desktop_history import HistoryView
+from src.chatprobe.desktop_support import SupportView
 from src.chatprobe.desktop_library import LibraryView
 from src.chatprobe.storage.library import Library
 from src.chatprobe.history_rerun import RerunDraft
@@ -65,6 +66,7 @@ class ChatProbeWindow:
         self.root = root
         self.events = Queue()
         self.running = False
+        self.restoring = False
         self.report = None
         self.saved_report_path = None
         self.results = {}
@@ -359,6 +361,8 @@ class ChatProbeWindow:
         consumption = page("Consumo")
         storage = page("Armazenamento")
         appearance = page("Aparência")
+        help_page = page("Ajuda")
+        SupportView(help_page, self, DEFAULT_DATABASE).pack(fill="x")
 
         destination = ttk.Labelframe(application, text="Aplicação de atendimento", padding=12)
         destination.pack(fill="x", pady=(0, 10))
@@ -775,7 +779,7 @@ class ChatProbeWindow:
         self.groq_key.set(selected if selected in names else names[0] if names else "")
 
     def start(self, nightly=False, scheduled=None):
-        if self.running:
+        if self.running or self.restoring:
             return
         if nightly and not self.night_queue.commit_draft():
             return
@@ -949,7 +953,7 @@ class ChatProbeWindow:
         try:
             if self.queue_store and self.running and self.queue_id:
                 self.queue_store.heartbeat(self.queue_id, self.queue_owner)
-            elif (self.queue_store and not self.running and not self.prompt_editor.expanded
+            elif (self.queue_store and not self.restoring and not self.running and not self.prompt_editor.expanded
                   and not self.night_queue.prompt_editor.expanded):
                 self.queue_store.recover_stale()
                 for identifier, status, scheduled in self.queue_store.available():
@@ -963,7 +967,7 @@ class ChatProbeWindow:
         self.queue_timer = self.root.after(2000, self.queue_tick)
 
     def launch_saved_queue(self, identifier, options=None):
-        if self.running:
+        if self.running or self.restoring:
             return False
         try:
             snapshot, items = self.queue_store.read(identifier)
