@@ -60,8 +60,21 @@ class QueueStore:
             db.execute("UPDATE queue_items SET status=?,result=? WHERE queue_id=? AND position=?",
                        (status, json.dumps(result) if result else None, identifier, position))
 
+    def reconcile_running(self, db, identifier):
+        db.execute("""UPDATE tests SET status='stopped',termination_reason='interrupted',ended_at=?
+                      WHERE batch_id=? AND status='running'""", (utc_now(), identifier))
+        db.execute("""UPDATE queue_items SET status=COALESCE(
+                      (SELECT status FROM tests WHERE batch_id=? AND test_number=position), 'pending')
+                      WHERE queue_id=? AND status='running'""", (identifier, identifier))
+
     def close(self, identifier, owner):
         with self.store.transaction() as db:
+            db.execute("BEGIN IMMEDIATE")
+            owned = db.execute("SELECT 1 FROM execution_queues WHERE id=? AND owner=? AND status='running'",
+                               (identifier, owner)).fetchone()
+            if not owned:
+                return
+            self.reconcile_running(db, identifier)
             db.execute(
                 """UPDATE execution_queues SET status=CASE WHEN EXISTS
                    (SELECT 1 FROM queue_items WHERE queue_id=? AND status='pending')
@@ -86,11 +99,7 @@ class QueueStore:
             rows = db.execute("SELECT id FROM execution_queues WHERE status='running' AND updated_at<?",
                               (cutoff,)).fetchall()
             for (identifier,) in rows:
-                db.execute("""UPDATE tests SET status='stopped',termination_reason='interrupted',ended_at=?
-                              WHERE batch_id=? AND status='running'""", (utc_now(), identifier))
-                db.execute("""UPDATE queue_items SET status=COALESCE(
-                              (SELECT status FROM tests WHERE batch_id=? AND test_number=position), 'pending')
-                              WHERE queue_id=? AND status='running'""", (identifier, identifier))
+                self.reconcile_running(db, identifier)
                 db.execute("UPDATE execution_queues SET status='interrupted',owner=NULL,updated_at=? WHERE id=?",
                            (utc_now(), identifier))
 

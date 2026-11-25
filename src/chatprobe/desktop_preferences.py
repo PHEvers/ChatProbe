@@ -24,7 +24,7 @@ class Preferences:
     customer_name: str = ""
     night_prompts: tuple[str, ...] = ()
     chat_url: str = DEFAULT_CHAT_URL
-    execution: dict = None
+    execution: dict | None = None
 
 
 def load_preferences():

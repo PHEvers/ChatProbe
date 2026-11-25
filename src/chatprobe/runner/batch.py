@@ -400,6 +400,8 @@ def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=
         try:
             if queues:
                 queues.close(queue_id, queue_owner)
+        except (OSError, sqlite3.Error):
+            events.put(("storage_error", "Falha ao fechar o registro da fila. Os itens poderão ser recuperados."))
         finally:
             events.put(("finished", None))
 

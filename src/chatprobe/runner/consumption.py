@@ -100,9 +100,9 @@ class ConsumptionLedger:
 
     def reserve(self, scopes, estimate, test_id=None, *, interaction=None, model=None):
         """Returns (reservation, delay). Transactions cover all applicable scopes."""
-        now = self.clock()
         with self.store.transaction() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            now = self.clock()
             delay = 0.0
             for scope, quota in scopes:
                 cooldown = connection.execute("SELECT until FROM api_cooldowns WHERE scope=?", (scope,)).fetchone()
