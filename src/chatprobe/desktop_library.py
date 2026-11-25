@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from src.chatprobe.desktop_preferences import write_text_atomically
 from src.chatprobe.desktop_prompt import PromptEditor
-from src.chatprobe.storage.library import Prompt, parse_import
+from src.chatprobe.storage.library import Prompt, export_library, parse_import
 
 
 class LibraryView(ttk.Frame):
@@ -18,6 +18,7 @@ class LibraryView(ttk.Frame):
         super().__init__(parent)
         self.library, self.open_test, self.enqueue, self.history = library, open_test, enqueue, history
         self.rows, self.groups = {}, {}
+        self.refreshing = False
         self.identifier = None
         self.selected = set()
         self.status = tk.StringVar()
@@ -40,6 +41,9 @@ class LibraryView(ttk.Frame):
         panes.add(edit, weight=2)
         self.tree = ttk.Treeview(list_panel, show="tree", selectmode="extended")
         self.tree.column("#0", width=210)
+        scroll = ttk.Scrollbar(list_panel, orient="vertical", command=self.tree.yview)
+        scroll.pack(side="right", fill="y")
+        self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", self.load)
         buttons = ttk.Frame(list_panel)
@@ -91,16 +95,25 @@ class LibraryView(ttk.Frame):
             self.group.set(current if current in self.groups else "Todas as coleções")
             self.rows = {str(row[0]): row for row in self.library.prompts(
                 self.groups[self.group.get()], self.query.get())}
+            self.refreshing = True
             self.tree.delete(*self.tree.get_children())
             for key, (_, _, prompt, version) in self.rows.items():
                 self.tree.insert("", "end", iid=key, text=f"{'★ ' if prompt.favorite else ''}{prompt.title} · v{version}")
             self.tree.selection_set(self.selected.intersection(self.rows))
+            self.after_idle(lambda: setattr(self, "refreshing", False))
         self.report(read)
 
     def current_rows(self):
-        return [self.rows[key] for key in self.tree.selection()]
+        visible = list(self.tree.selection())
+        hidden = self.selected.difference(self.rows)
+        rows = [self.rows[key] for key in visible]
+        if hidden:
+            rows.extend(row for row in self.library.prompts() if str(row[0]) in hidden)
+        return rows
 
     def load(self, event=None):
+        if self.refreshing:
+            return
         self.selected.difference_update(self.rows)
         self.selected.update(self.tree.selection())
         self.status.set(f"{len(self.selected)} selecionado(s)")
@@ -168,11 +181,12 @@ class LibraryView(ttk.Frame):
 
     def export(self):
         rows = self.current_rows() or list(self.rows.values())
-        path = filedialog.asksaveasfilename(parent=self, defaultextension=".json",
-                                            initialfile=f"biblioteca-{uuid4().hex[:8]}.json")
+        path = filedialog.asksaveasfilename(parent=self, defaultextension=".json", confirmoverwrite=True,
+                                            initialfile=f"biblioteca-{uuid4().hex[:8]}.json",
+                                            filetypes=[("JSON", "*.json"), ("Markdown", "*.md"), ("Texto", "*.txt")])
         if path:
-            self.report(lambda: write_text_atomically(Path(path), json.dumps(
-                {"version": 1, "prompts": [asdict(row[2]) for row in rows]}, ensure_ascii=False, indent=2)))
+            target = Path(path)
+            self.report(lambda: write_text_atomically(target, export_library(rows, target.suffix.lower())))
 
     def import_file(self):
         if not self.library:
@@ -187,26 +201,58 @@ class LibraryView(ttk.Frame):
         existing = {row[2].content for row in self.library.prompts(group) if row[1] == group}
         preview = tk.Toplevel(self)
         preview.title("Prévia da importação")
-        editor = PromptEditor(preview, title=False, readonly=True)
+        preview.geometry("800x520")
+        listbox = tk.Listbox(preview, selectmode="extended", exportselection=False)
+        listbox.pack(side="left", fill="y")
+        panel = ttk.Frame(preview)
+        panel.pack(fill="both", expand=True)
+        editor = PromptEditor(panel)
         editor.pack(fill="both", expand=True)
-        editor.set_value("\n\n".join(f"{p.title}\n{p.content}" for p in prompts))
+        if self.editor.palette:
+            editor.apply_palette(self.editor.palette)
+        for index, prompt in enumerate(prompts, 1):
+            listbox.insert("end", f"{index}. {prompt.title}" + (" (duplicado)" if prompt.content in existing else ""))
+        listbox.selection_set(0, "end")
+        active = None
+        from dataclasses import replace
+        def save_draft():
+            if active is not None:
+                prompts[active] = replace(prompts[active], content=editor.value(), title=editor.title_var.get())
+        def load(event=None):
+            nonlocal active
+            index = listbox.index("active")
+            if active == index:
+                return
+            save_draft()
+            active = index
+            editor.set_value(prompts[index].content, prompts[index].title)
+        listbox.bind("<<ListboxSelect>>", load)
+        load()
+        duplicate = ttk.Combobox(panel, values=("Ignorar", "Copiar", "Atualizar e versionar"),
+                                 state="readonly")
+        duplicate.set("Ignorar")
+        duplicate.pack()
         def confirm():
+            save_draft()
             added = invalid = duplicates = 0
-            for prompt in prompts:
-                if prompt.content in existing:
+            matches = {row[2].content: row[0] for row in self.library.prompts(group) if row[1] == group}
+            for index in listbox.curselection():
+                prompt = prompts[index]
+                identifier = matches.get(prompt.content)
+                if identifier and duplicate.get() == "Ignorar":
                     duplicates += 1
                     continue
                 try:
-                    self.library.save(prompt, group)
-                except (ValueError, TypeError):
+                    saved = self.library.save(prompt, group, identifier if duplicate.get() == "Atualizar e versionar" else None)
+                except (ValueError, TypeError, AttributeError):
                     invalid += 1
                 else:
                     added += 1
-                    existing.add(prompt.content)
+                    matches[prompt.content] = saved
             self.refresh()
-            self.status.set(f"{added} importados · {duplicates} duplicados · {invalid} inválidos")
+            self.status.set(f"{added} salvos · {duplicates} duplicados · {invalid} inválidos")
             preview.destroy()
-        ttk.Button(preview, text="Importar e ignorar duplicados", command=lambda: self.report(confirm)).pack()
+        ttk.Button(panel, text="Importar selecionados", command=lambda: self.report(confirm)).pack()
 
     def versions(self):
         if self.identifier:

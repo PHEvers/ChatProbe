@@ -502,7 +502,7 @@ class ChatProbeWindow:
     @staticmethod
     def library_reference(row, run=None):
         return {"library_prompt_id": str(row[0]), "library_collection_id": row[1],
-                "library_prompt_version": row[3], "library_collection_run_id": run}
+                "library_prompt_version": row[3], "library_collection_run_id": run, "library_expected": row[2].expected}
 
     def load_library_prompt(self, row):
         if self.running:

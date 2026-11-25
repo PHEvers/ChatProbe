@@ -100,6 +100,11 @@ class Library:
 
 
 def parse_import(content, suffix):
+    if suffix == ".md" and content.startswith("<!-- chatprobe:v1 -->"):
+        _, _, payload = content.partition("\n```json\n")
+        if payload:
+            body, _, _ = payload.partition("\n```")
+            return parse_import(body, ".json")
     if suffix == ".json":
         document = json.loads(content)
         if isinstance(document, dict) and "initial_message" in document:
@@ -111,3 +116,13 @@ def parse_import(content, suffix):
     parts = re.split(r"(?m)^--- CHATPROBE ---\r?\n", content)
     return [Prompt(next((line.strip().lstrip("# ") for line in part.splitlines() if line.strip()), "Prompt")[:100],
                    part) for part in parts if part.strip()]
+
+
+def export_library(rows, suffix):
+    exported = {"version": 1, "prompts": [asdict(row[2]) for row in rows]}
+    if suffix == ".txt":
+        return "\n--- CHATPROBE ---\n".join(row[2].content for row in rows)
+    encoded = json.dumps(exported, ensure_ascii=False, indent=2)
+    if suffix == ".md":
+        return "<!-- chatprobe:v1 -->\n# Biblioteca de prompts\n\n```json\n" + encoded + "\n```\n"
+    return encoded + "\n"
