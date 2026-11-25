@@ -7,6 +7,7 @@ import sys
 from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import monotonic
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from src.chatprobe.browser.timing import utc_now
@@ -54,7 +55,13 @@ def check_database(path):
 
 def copy_database(source, target):
     with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as current,         closing(sqlite3.connect(target, timeout=3)) as backup:
-        current.backup(backup)
+        deadline = monotonic() + 60
+
+        def check_timeout(status, remaining, total):
+            if monotonic() > deadline and remaining != 0:
+                raise TimeoutError("O SQLite demorou para liberar a cópia.")
+
+        current.backup(backup, pages=128, sleep=0.1, progress=check_timeout)
 
 
 def create_backup(database, target):
@@ -123,7 +130,6 @@ def restore_backup(database, source, safety_backup):
 
 
 def diagnostic(database):
-    from playwright.sync_api import sync_playwright
     lines = [f"ChatProbe {VERSION}", f"Sistema · {platform.system()} {platform.release()}",
              f"Python · {sys.version_info.major}.{sys.version_info.minor}"]
     try:
@@ -131,6 +137,7 @@ def diagnostic(database):
     except (OSError, sqlite3.Error, ValueError):
         lines.append("SQLite · indisponível ou incompatível")
     try:
+        from playwright.sync_api import sync_playwright
         with sync_playwright() as playwright:
             found = Path(playwright.chromium.executable_path).is_file()
     except Exception:

@@ -156,3 +156,27 @@ def setup_assistant(app):
     for label, command in (("Voltar", lambda: move(-1)), ("Avançar", lambda: move(1)),
                            ("Concluir", save), ("Mais tarde", dialog.destroy)):
         ttk.Button(bar, text=label, command=command).pack(side="left", padx=3)
+
+
+def check_startup(app, database):
+    result = Queue()
+    def verify():
+        problems = []
+        if not (RESOURCE_ROOT / "docs/fase-7-distribuicao.md").is_file():
+            problems.append("ajuda local ausente")
+        summary = diagnostic(database)
+        if "indisponível ou incompatível" in summary:
+            problems.append("SQLite indisponível")
+        if "Chromium · não encontrado" in summary:
+            problems.append("Chromium ausente")
+        result.put(problems)
+    def poll():
+        try:
+            problems = result.get_nowait()
+        except Empty:
+            app.root.after(120, poll)
+            return
+        if problems:
+            app.warning.set("Verificação inicial: " + ", ".join(problems) + ". Confira Configurações → Ajuda.")
+    Thread(target=verify, daemon=True).start()
+    app.root.after(120, poll)
