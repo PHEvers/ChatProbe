@@ -2,7 +2,7 @@
 
 Atualizado em 24/11/2026.
 
-O ChatProbe executou um roteiro JSON e registrou uma conversa com o AutoSystem em homologação pelo terminal. O aplicativo Windows oferece os modos Groq e Ollama, lotes e uma fila de testes noturnos. Os fluxos do aplicativo foram verificados com simulação local.
+O ChatProbe executou um roteiro JSON e registrou uma conversa com o AutoSystem em homologação pelo terminal. O aplicativo Windows oferece os modos Groq e Ollama, lotes e uma fila de testes. Os fluxos do aplicativo foram verificados com simulação local.
 
 | Entrega | Situação | Evidência ou trabalho restante |
 | --- | --- | --- |
@@ -10,10 +10,10 @@ O ChatProbe executou um roteiro JSON e registrou uma conversa com o AutoSystem e
 | Envio e captura da conversa | Validados em homologação | O teste de cupom registrou dois turnos na mesma sessão. O relatório JSON local contém duas mensagens enviadas e uma resposta do bot para cada uma. |
 | Roteiro JSON com respostas condicionais | Validado em homologação | O exemplo de cupom envia o nome de teste quando a resposta contém “seu nome”. A captura aguarda a resposta estabilizar sem confirmação entre os turnos. |
 | Interface web local | Validada pelo usuário | A versão Streamlit executa o roteiro e permite baixar a conversa em JSON. |
-| Interface desktop | Implementada e testada com simulação | Salva preferências de execução e chaves por nome. Mostra as conversas e permite pausar, retomar ou parar um lote. |
+| Interface desktop | Redesenhada e validada no Linux | Navegação com versão, temas claro e escuro, editor ampliável e conversa selecionável. Veja as [capturas e a validação no Windows](fase-4-interface.md). |
 | Executável do Windows | Build concluído | O executável abriu corretamente e inclui o Chromium. O script mantém a versão atual e as duas anteriores. |
 | Conversa guiada por IA | Implementada e testada com simulação | Groq e Ollama usam o objetivo e o histórico da sessão para conduzir a conversa. O modelo local `qwen3:4b` foi validado com respostas simuladas. |
-| Testes noturnos | Implementados e validados com chat local | A fila persistente executa um teste por prompt com o Chromium sem janela e atualiza o JSON a cada resultado. |
+| Fila de testes | Implementados e validados com chat local | A fila persistente executa um teste por prompt com o Chromium sem janela e atualiza o JSON a cada resultado. |
 | Fundação e estabilidade | Implementada e validada localmente | URL configurável, detecção contextual de loops, motivos de encerramento, horários e armazenamento incremental em SQLite. Veja a [documentação da Fase 1](fase-1-fundacao.md). |
 | Avaliação e histórico | Planejados | Classificar o atendimento por critério e consultar execuções anteriores no aplicativo. |
 | Execução paralela | Implementada e testada com simulação | Cada teste abre uma sessão de navegador. Falta confirmar a separação dos históricos pelo chatbot em homologação. |

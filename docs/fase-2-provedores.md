@@ -6,7 +6,7 @@ Use **Testar conexão** para verificar a listagem e o acesso ao modelo seleciona
 
 Perfis podem ser renomeados, duplicados ou excluídos. Cada duplicação recebe um identificador novo e começa sem chave. No Windows, **Salvar chave** associa a credencial ao perfil no Gerenciador de Credenciais. Em outros sistemas, a chave vale durante a sessão atual. As chaves Groq já cadastradas permanecem no armazenamento anterior. No perfil Groq original, o botão **Reutilizar chave Groq** permite selecionar uma chave existente. O catálogo inicial importa o modelo Ollama salvo e preserva o modo de execução anterior. A configuração de perfis fica no arquivo local `providers.json`.
 
-Selecione o modo **Provedor de IA** nas preferências de execução. Nas abas **Teste** e **Testes noturnos**, escolha o perfil da execução ou mantenha o padrão. Os modos Groq e Ollama anteriores e o modo Roteiro JSON continuam disponíveis.
+Selecione o modo **Provedor de IA** em **Configurações → Provedores de IA**. Nas abas **Teste** e **Fila de testes**, escolha o perfil da execução ou mantenha o padrão. Os modos Groq e Ollama anteriores e o modo Roteiro JSON continuam disponíveis.
 
 ## Integração e registros
 

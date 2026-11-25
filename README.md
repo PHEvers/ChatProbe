@@ -6,6 +6,10 @@ O roteiro JSON foi validado em homologação pelo terminal. O aplicativo Windows
 
 Consulte o [mapa de andamento](docs/status-do-projeto.md) para ver as validações e as próximas entregas.
 
+## Interface desktop
+
+As abas **Teste**, **Fila de testes** e **Configurações** ficam à esquerda do cabeçalho. A versão aparece à direita, sob o nome ChatProbe. O [guia da interface](docs/fase-4-interface.md) reúne capturas dos temas, atalhos e a validação no Windows.
+
 ## Aplicativo para Windows
 
 Na pasta do projeto, abra o **PowerShell do Windows** com o Python para Windows disponível e rode:
@@ -16,13 +20,13 @@ Na pasta do projeto, abra o **PowerShell do Windows** com o Python para Windows 
 
 O script prepara o ambiente, instala o Chromium e gera `dist\ChatProbe\ChatProbe.exe`. Se o Python estiver disponível pelo comando `py`, use `.\build-windows.ps1 -Python py`. Para nomear a pasta da versão, use `-OutputDirectory 'dist/nome-da-versao'`. Para executar em outro computador Windows, copie a pasta `ChatProbe` inteira, incluindo `_internal`.
 
-Após cada build bem-sucedido, `dist` fica com o novo pacote e até dois pacotes anteriores. Quando o destino já tem um pacote do ChatProbe, o script guarda a versão substituída em uma pasta `anterior-*` antes de publicar a nova.
+O recurso de versão do executável e a tag da interface vêm do arquivo `VERSION`. Após cada build bem-sucedido, `dist` fica com o novo pacote e até dois pacotes anteriores. Quando o destino já tem um pacote do ChatProbe, o script guarda a versão substituída em uma pasta `anterior-*` antes de publicar a nova.
 
 ### Configurar e executar um teste
 
-1. Em **Configurações → URL do chat**, salve o endereço HTTP ou HTTPS do ambiente de teste. O portal de homologação atual é o padrão. Em **Preferências de execução**, selecione o **Modo** e informe o **Nome do cliente**. Escolha o **Modelo Ollama** ou a **Chave Groq**, conforme o modo.
+1. Em **Configurações → Aplicação**, salve a URL HTTP ou HTTPS do ambiente de teste e informe o nome padrão. O portal de homologação atual é o padrão. Em **Configurações → Provedores de IA**, selecione o modo de execução e o modelo ou chave, quando aplicável.
 2. Na aba **Teste**, selecione o **Produto**, informe a quantidade de testes e quantos podem rodar simultaneamente. Cole um **Prompt inicial** ou um **Roteiro JSON**, conforme o modo.
-3. Clique em **Executar teste**. Ao encerrar o lote, selecione um teste no campo **Resultado** para ler a conversa. Use **Abrir pasta do relatório** para localizar o JSON ou **Salvar JSON** para gravar uma cópia.
+3. Clique em **Iniciar teste**. Ao encerrar o lote, selecione um item no campo **Resultado**. Você pode selecionar partes da conversa, copiar o texto completo, ampliar o painel, abrir a pasta de relatórios ou exportar uma cópia em JSON.
 
 | Modo | Entrada | Configuração |
 | --- | --- | --- |
@@ -34,23 +38,23 @@ Nos modos Groq e Ollama, **Máx. mensagens do cliente** controla o limite de cad
 
 O nome e o produto iniciais são **Pedro Teste Automatizado** e **AUTOSYSTEM**. A triagem envia o CNPJ de teste, seleciona **Suporte Técnico** e escolhe o produto. Se o chatbot listar casos em aberto, o ChatProbe seleciona **Outro assunto**. Quando solicitado, envia o nome configurado. No modo JSON, o envio acontece no passo correspondente do roteiro.
 
-Em **Configurações**, use **Escolher pasta** para definir o destino dos relatórios. O padrão no Windows é `%USERPROFILE%\ChatProbe\Resultados`. O aplicativo lembra a pasta, o modo, o modelo Ollama, o nome do cliente e o tema entre sessões.
+Em **Configurações → Armazenamento**, use **Escolher pasta** para definir o destino dos relatórios. O padrão no Windows é `%USERPROFILE%\ChatProbe\Resultados`. O aplicativo lembra a pasta, o modo, o modelo Ollama, o nome do cliente e o tema entre sessões.
 
-Em **Configurações → Chaves de API**, selecione o provedor, informe um nome e cole a chave para salvar. Você pode cadastrar várias chaves de Groq, OpenAI, Anthropic ou Google Gemini. A chave que já estava cadastrada aparece como **Padrão**. As chaves ficam no Gerenciador de Credenciais do Windows. Para a Groq, selecione uma chave e clique em **Testar conexão** para validar o acesso à lista de modelos. [Criar uma chave da Groq](https://console.groq.com/keys)
+Em **Configurações → Provedores de IA → Chaves de API existentes**, selecione o provedor, informe um nome e cole a chave para salvar. Você pode cadastrar várias chaves de Groq, OpenAI, Anthropic ou Google Gemini. A chave que já estava cadastrada aparece como **Padrão**. As chaves ficam no Gerenciador de Credenciais do Windows. Para a Groq, selecione uma chave e clique em **Testar conexão** para validar o acesso à lista de modelos. [Criar uma chave da Groq](https://console.groq.com/keys)
 
 Se a Groq recusar uma chamada por limite de tokens ou de requisições, o ChatProbe interrompe o lote, exibe o motivo e preserva as mensagens capturadas. [Limites da Groq](https://console.groq.com/docs/rate-limits)
 
 ### Executar com Ollama
 
 1. Abra o Ollama no mesmo computador que executa o ChatProbe. Se precisar instalar um modelo, execute `ollama pull qwen3:4b`.
-2. Na aba **Configurações**, selecione **Ollama** no campo **Modo** e escolha um modelo instalado em **Modelo Ollama**.
-3. Preencha o **Prompt inicial**, defina **Máx. mensagens do cliente** e clique em **Executar teste**. Comece com um teste simultâneo para conferir o tempo de resposta do modelo.
+2. Em **Configurações → Provedores de IA**, selecione **Ollama** no campo **Modo** e escolha um modelo instalado em **Modelo Ollama**.
+3. Preencha o **Prompt inicial**, defina **Máx. mensagens do cliente** e clique em **Iniciar teste**. Comece com um teste simultâneo para conferir o tempo de resposta do modelo.
 
 O ChatProbe acessa o Ollama em `http://127.0.0.1:11434` e gera as mensagens do cliente sem chave de API. O Chromium usa a rede para acessar o chat de homologação. [Instalar o Ollama](https://ollama.com/download)
 
 ### Fila de testes
 
-Na aba **Fila de testes**, escreva um prompt inicial e clique em **Adicionar à fila**. Repita para cada cenário. Para editar um item, selecione-o e clique em **Salvar alterações** depois de alterar o texto. A fila fica salva e usa o modo, o modelo e o nome definidos em **Configurações**. No modo JSON, adicione um roteiro por item.
+Na aba **Fila de testes**, escreva um prompt inicial e clique em **Adicionar à fila**. Repita para cada cenário. Escolha um título opcional, use **Ampliar editor** para prompts longos e salve as alterações. **Subir** e **Descer** mudam a ordem da fila preservando o texto. A fila fica salva e usa o modo, o modelo e o nome definidos em **Configurações**. No modo JSON, adicione um roteiro por item.
 
 Clique em **Executar fila** para iniciar um teste por item, com o Chromium em segundo plano. Mantenha o computador acordado durante a execução. O JSON é atualizado a cada teste encerrado. Use **Ver conversas** para abrir os resultados no aplicativo.
 
@@ -195,7 +199,7 @@ Mantenha credenciais, arquivos de sessão e relatórios com dados internos fora 
 ## Roadmap
 
 - [x] Validar a triagem e uma conversa com roteiro JSON em homologação pelo terminal.
-- [x] Implementar a janela desktop, os modos Groq e Ollama e a fila de testes noturnos.
+- [x] Implementar a janela desktop, os modos Groq e Ollama e a fila de testes.
 - [ ] Validar os modos do aplicativo Windows e o isolamento das sessões simultâneas em homologação.
 - [ ] Avaliar critérios e comparar execuções com base nas evidências das conversas.
 
