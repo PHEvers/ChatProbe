@@ -24,7 +24,7 @@ class Preferences:
     customer_name: str = ""
     night_prompts: tuple[str, ...] = ()
     night_prompt_titles: tuple[str, ...] = ()
-    night_prompt_origins: tuple[str | None, ...] = ()
+    night_prompt_origins: tuple[str | dict | None, ...] = ()
     chat_url: str = DEFAULT_CHAT_URL
     execution: dict | None = None
 
@@ -61,7 +61,7 @@ def load_preferences():
         night_prompts=tuple(prompt for _, prompt in entries),
         night_prompt_titles=tuple(titles[i] if i < len(titles) and isinstance(titles[i], str) else ""
                                   for i, _ in entries) if titles else (),
-        night_prompt_origins=tuple(origins[i] if i < len(origins) and isinstance(origins[i], str) else None
+        night_prompt_origins=tuple(origins[i] if i < len(origins) and isinstance(origins[i], (str, dict)) else None
                                    for i, _ in entries) if origins else (),
     )
 

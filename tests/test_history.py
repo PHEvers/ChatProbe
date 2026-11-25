@@ -165,7 +165,7 @@ class HistoryTests(unittest.TestCase):
     def test_migrates_phase_four_queue_metadata(self):
         path = self.path.with_name("phase-four.sqlite3")
         with sqlite3.connect(path) as db:
-            for migration in MIGRATIONS[:-1]:
+            for migration in MIGRATIONS[:4]:
                 for sql in migration:
                     db.execute(sql)
             db.execute("PRAGMA user_version=4")

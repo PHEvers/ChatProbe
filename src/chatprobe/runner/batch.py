@@ -195,6 +195,9 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
             events.put(("storage_error", "Falha na gravação SQLite. Os relatórios JSON continuam disponíveis."))
             return None
 
+    history.update({key: history_context[key] for key in
+                    ("library_prompt_id","library_collection_id","library_collection_run_id","library_prompt_version")
+                    if key in history_context})
     if store is not None:
         test_id = persist(store.start_test, batch_id or uuid4().hex, number, mode, timing.started_at, metadata, history)
 

@@ -11,6 +11,7 @@ from src.chatprobe.storage.history_metadata import (
 
 
 FILTERS = {
+    "library_prompt": "t.library_prompt_id", "library_collection": "t.library_collection_id",
     "product": "t.product", "provider": "json_extract(t.provider_json,'$.name')",
     "model": "json_extract(t.provider_json,'$.model')", "status": "t.status",
     "execution_type": "t.execution_type", "version": "t.application_version", "batch": "t.batch_id",
