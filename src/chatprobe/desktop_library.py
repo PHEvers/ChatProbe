@@ -19,6 +19,7 @@ class LibraryView(ttk.Frame):
         self.library, self.open_test, self.enqueue, self.history = library, open_test, enqueue, history
         self.rows, self.groups = {}, {}
         self.refreshing = False
+        self.filters = {}
         self.identifier = None
         self.selected = set()
         self.status = tk.StringVar()
@@ -31,6 +32,7 @@ class LibraryView(ttk.Frame):
         self.query.pack(side="left", fill="x", expand=True, padx=5)
         self.query.bind("<Return>", lambda event: self.refresh())
         ttk.Button(bar, text="Buscar", command=self.refresh).pack(side="left")
+        ttk.Button(bar, text="Filtros...", command=self.edit_filters).pack(side="left")
         ttk.Button(bar, text="Coleções...", command=self.manage_collection).pack(side="left")
         ttk.Button(bar, text="Importar...", command=self.import_file).pack(side="left")
         ttk.Label(self, textvariable=self.status).pack(side="bottom", anchor="w", pady=3)
@@ -70,7 +72,7 @@ class LibraryView(ttk.Frame):
         actions = ttk.Frame(edit)
         actions.pack(fill="x")
         for label, callback in (("Salvar", self.save), ("Duplicar", lambda: self.save(copy=True)),
-                                ("Versões", self.versions), ("Abrir no Teste", self.run),
+                                ("Versões", self.versions), ("Mover/copiar", self.transfer), ("Abrir no Teste", self.run),
                                 ("Enviar à fila", self.send), ("Histórico", self.show_history)):
             ttk.Button(actions, text=label, command=callback).pack(side="left")
         self.refresh()
@@ -94,7 +96,7 @@ class LibraryView(ttk.Frame):
             self.group.configure(values=tuple(self.groups))
             self.group.set(current if current in self.groups else "Todas as coleções")
             self.rows = {str(row[0]): row for row in self.library.prompts(
-                self.groups[self.group.get()], self.query.get())}
+                self.groups[self.group.get()], self.query.get(), **self.filters)}
             self.refreshing = True
             self.tree.delete(*self.tree.get_children())
             for key, (_, _, prompt, version) in self.rows.items():
@@ -102,6 +104,34 @@ class LibraryView(ttk.Frame):
             self.tree.selection_set(tuple(self.selected.intersection(self.rows)))
             self.after_idle(lambda: setattr(self, "refreshing", False))
         self.report(read)
+
+    def edit_filters(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("Filtros da Biblioteca")
+        options = {"mode": ("Modo", ("", "ai", "json")), "product": ("Produto", ()),
+                   "tag": ("Tag", ()), "created": ("Criado desde (AAAA-MM-DD)", ()),
+                   "updated": ("Atualizado desde (AAAA-MM-DD)", ()),
+                   "order": ("Ordem", ("title", "created", "updated", "last_run", "runs"))}
+        entries = {}
+        for row, (key, (caption, choices)) in enumerate(options.items()):
+            ttk.Label(dialog, text=caption).grid(row=row, column=0, sticky="w", padx=6, pady=2)
+            field = ttk.Combobox(dialog, state="readonly", values=choices) if choices else ttk.Entry(dialog)
+            value = self.filters.get(key, "title" if key == "order" else "")
+            if choices:
+                field.set(value)
+            else:
+                field.insert(0, value)
+            field.grid(row=row, column=1, padx=6, pady=2)
+            entries[key] = field
+        favorite = tk.BooleanVar(value=self.filters.get("favorite", False))
+        ttk.Checkbutton(dialog, text="Somente favoritos", variable=favorite).grid(row=6, column=0)
+        def apply(clear=False):
+            self.filters = {} if clear else {**{key: field.get().strip() for key, field in entries.items()},
+                                             "favorite": favorite.get()}
+            dialog.destroy()
+            self.refresh()
+        ttk.Button(dialog, text="Limpar", command=lambda: apply(True)).grid(row=7, column=0)
+        ttk.Button(dialog, text="Aplicar", command=apply).grid(row=7, column=1)
 
     def current_rows(self):
         visible = list(self.tree.selection())
@@ -166,11 +196,39 @@ class LibraryView(ttk.Frame):
         ttk.Button(dialog, text="Criar", command=save).pack(fill="x")
         if group:
             ttk.Button(dialog, text="Editar", command=lambda: save(True)).pack(fill="x")
+            ttk.Button(dialog, text="Duplicar", command=lambda: (self.report(
+                lambda: self.library.duplicate_collection(group)), self.refresh())).pack(fill="x")
+            ttk.Button(dialog, text="Histórico da coleção", command=lambda: self.history(group, collection=True)).pack(fill="x")
+            ttk.Button(dialog, text="Exportar coleção", command=lambda: self.export(self.library.prompts(group))).pack(fill="x")
             ttk.Button(dialog, text="Excluir coleção", command=lambda: (
                 self.report(lambda: self.library.delete_collection(group)), self.refresh()
             ) if messagebox.askyesno("Excluir", "Excluir coleção e manter seus prompts?", parent=dialog) else None).pack(fill="x")
             ttk.Button(dialog, text="Enviar coleção à fila", command=lambda: self.enqueue(
                 self.library.prompts(group))).pack(fill="x")
+
+    def transfer(self):
+        rows = self.current_rows()
+        if not rows:
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Mover ou copiar prompts")
+        targets = {"Sem coleção": None, **{label: identifier for label, identifier in self.groups.items() if identifier}}
+        field = ttk.Combobox(dialog, state="readonly", values=tuple(targets))
+        field.current(0)
+        field.pack(padx=6, pady=6)
+        def apply(copy):
+            def operation():
+                target = targets[field.get()]
+                if copy:
+                    for _, _, prompt, _ in rows:
+                        self.library.save(prompt, target)
+                else:
+                    self.library.move((row[0] for row in rows), target)
+            self.report(operation)
+            dialog.destroy()
+            self.refresh()
+        for label, copy in (("Mover", False), ("Copiar", True)):
+            ttk.Button(dialog, text=label, command=lambda copy=copy: apply(copy)).pack(fill="x")
 
     def delete(self):
         keys = tuple(map(int, self.tree.selection()))
@@ -179,8 +237,9 @@ class LibraryView(ttk.Frame):
             self.new()
             self.refresh()
 
-    def export(self):
-        rows = self.current_rows() or list(self.rows.values())
+    def export(self, rows=None):
+        if rows is None:
+            rows = self.current_rows() or list(self.rows.values())
         path = filedialog.asksaveasfilename(parent=self, defaultextension=".json", confirmoverwrite=True,
                                             initialfile=f"biblioteca-{uuid4().hex[:8]}.json",
                                             filetypes=[("JSON", "*.json"), ("Markdown", "*.md"), ("Texto", "*.txt")])
