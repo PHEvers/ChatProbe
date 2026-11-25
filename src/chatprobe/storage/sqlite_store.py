@@ -134,6 +134,7 @@ MIGRATIONS = (
            prompt_id INTEGER REFERENCES prompts(id) ON DELETE CASCADE, version INTEGER, snapshot TEXT NOT NULL,
            created_at TEXT NOT NULL, PRIMARY KEY(prompt_id,version))""",
         "ALTER TABLE tests ADD COLUMN library_prompt_version INTEGER",
+        "ALTER TABLE tests ADD COLUMN library_expected TEXT",
         "CREATE INDEX tests_by_library_prompt ON tests(library_prompt_id,started_at)",
         "CREATE INDEX tests_by_library_collection ON tests(library_collection_id,started_at)",
     ),
@@ -184,9 +185,9 @@ class RunStore:
                  0 if mode == "json" else None),
             )
             connection.execute("""UPDATE tests SET library_prompt_id=?,library_collection_id=?,
-                library_collection_run_id=?,library_prompt_version=? WHERE id=?""",
+                library_collection_run_id=?,library_prompt_version=?,library_expected=? WHERE id=?""",
                 (history.get("library_prompt_id"),history.get("library_collection_id"),
-                 history.get("library_collection_run_id"),history.get("library_prompt_version"),test_id))
+                 history.get("library_collection_run_id"),history.get("library_prompt_version"),history.get("library_expected"),test_id))
             connection.execute(
                 "INSERT INTO events (test_id, kind, occurred_at) VALUES (?, 'started', ?)",
                 (test_id, started_at),
