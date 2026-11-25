@@ -4,6 +4,8 @@ import json
 import math
 import re
 from http.client import HTTPException
+from email.utils import parsedate_to_datetime
+from time import time
 from dataclasses import dataclass, field
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
@@ -35,13 +37,16 @@ ERRORS = {
     "model": "Modelo inexistente ou indisponível para esta chave.",
     "timeout": "Tempo limite da solicitação excedido.",
     "rate_limit": "Limite de API atingido ou servidor sobrecarregado.",
+    "temporary": "Falha temporária no servidor do provedor.",
     "response": "O provedor recusou a operação ou devolveu uma resposta incompatível.",
 }
 
 
 class ProviderError(Exception):
-    def __init__(self, code):
+    def __init__(self, code, retry_after=None, *, daily=False):
         self.code = code
+        self.retry_after = retry_after
+        self.daily = daily
         super().__init__(ERRORS[code])
 
 
@@ -54,6 +59,9 @@ class ProviderProfile:
     model: str = ""
     temperature: float | None = None
     timeout: float = 30
+    quota: str = ""
+    model_quota: str = ""
+    quota_scope: str = ""
 
     def validate(self):
         if (not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", self.id) or not self.name.strip() or not self.name.isprintable()
@@ -68,6 +76,11 @@ class ProviderProfile:
             not math.isfinite(self.temperature) or not 0 <= self.temperature <= (1 if self.kind == "anthropic" else 2)
         ):
             raise ValueError("Informe uma temperatura compatível com o protocolo (0 a 1 para Claude, 0 a 2 para os demais).")
+        from src.chatprobe.runner.consumption import Quota
+        Quota.parse(self.quota)
+        Quota.parse(self.model_quota)
+        if len(self.quota_scope) > 100 or (self.quota_scope and not self.quota_scope.isprintable()):
+            raise ValueError("Informe um identificador de cota válido.")
         return self
 
     def metadata(self):
@@ -126,10 +139,20 @@ class Provider:
         except HTTPError as error:
             with error:
                 status = error.code
+                daily = False
                 if status in (401, 403):
                     code = "auth"
                 elif status in (429, 503):
                     code = "rate_limit"
+                    if status == 429:
+                        try:
+                            detail = error.read(16384).decode("utf-8", errors="replace").lower()
+                        except (OSError, HTTPException):
+                            detail = ""
+                        daily = any(marker in detail for marker in (
+                            "per day", "per_day", "perday", "daily limit", "daily quota"))
+                elif status in (500, 502):
+                    code = "temporary"
                 elif status in (408, 504):
                     code = "timeout"
                 elif status in (400, 404):
@@ -150,7 +173,7 @@ class Provider:
                         code = "model" if model_error else "endpoint" if status == 404 else "response"
                 else:
                     code = "endpoint" if 300 <= status < 400 or status == 405 else "response"
-            raise ProviderError(code) from None
+            raise ProviderError(code, retry_after_seconds(error.headers.get("Retry-After")), daily=daily) from None
         except (TimeoutError, URLError, OSError, HTTPException) as error:
             timeout = isinstance(error, TimeoutError) or isinstance(getattr(error, "reason", None), TimeoutError)
             raise ProviderError("timeout" if timeout else "connection") from None
@@ -221,8 +244,19 @@ class Provider:
             raise ProviderError("response") from None
         return Action(kind, text, usage)
 
-    def test_generation(self):
-        return self.generate("Inicie relatando que uma impressora fictícia não imprimiu.", [])
+    def test_generation(self, *, ledger=None, scopes=()):
+        objective = "Inicie relatando que uma impressora fictícia não imprimiu."
+        if ledger is None:
+            return self.generate(objective, [])
+        from src.chatprobe.runner.consumption import ExecutionOptions, LocalQuotaError, generate_with_controls
+
+        def reject_wait(seconds, label):
+            raise LocalQuotaError(f"{label}. Consulte novamente em {math.ceil(seconds)} s.")
+
+        return generate_with_controls(self.generate, objective, [], {}, ledger=ledger, scopes=scopes,
+                                      test_id=None, policy=ExecutionOptions(max_wait=86400),
+                                      checkpoint=lambda: None, wait_for=reject_wait,
+                                      records=[], model=self.profile.model)
 
     def complete(self, messages):
         kind, model = self.profile.kind, self.profile.model
@@ -230,10 +264,10 @@ class Provider:
         options = {} if temperature is None else {"temperature": temperature}
         if kind == "ollama":
             data = self.request("/api/chat", {"model": model, "messages": messages,
-                                "format": ACTION_SCHEMA, "stream": False, "options": options})
+                                "format": ACTION_SCHEMA, "stream": False, "options": {"num_predict": 1024, **options}})
             return data["message"]["content"], token_usage(data, "prompt_eval_count", "eval_count")
         if kind == "gemini":
-            configuration = {"responseMimeType": "application/json", "responseSchema": {
+            configuration = {"maxOutputTokens": 1024, "responseMimeType": "application/json", "responseSchema": {
                 "type": "OBJECT", "properties": {
                     "action": {"type": "STRING", "enum": ["send", "stop", "interrupt"]},
                     "text": {"type": "STRING"},
@@ -252,7 +286,8 @@ class Provider:
                                 "messages": messages[1:], "max_tokens": 1024, **options})
             content = "".join(part["text"] for part in data["content"] if part.get("type") == "text")
             return content, token_usage(data.get("usage", {}), "input_tokens", "output_tokens")
-        data = self.request("/chat/completions", {"model": model, "messages": messages, **options})
+        limit = "max_completion_tokens" if urlsplit(self.profile.base_url).hostname == "api.openai.com" else "max_tokens"
+        data = self.request("/chat/completions", {"model": model, "messages": messages, limit: 1024, **options})
         return data["choices"][0]["message"]["content"], token_usage(
             data.get("usage", {}), "prompt_tokens", "completion_tokens", "total_tokens")
 
@@ -268,8 +303,9 @@ def legacy_provider(key, model):
         try:
             decision = action(credential, objective, turns, **options)
             return Action(*decision, getattr(decision, "usage", {}))
-        except (groq_api.GroqLimitError, ollama_api.OllamaLimitError):
-            raise ProviderError("rate_limit") from None
+        except (groq_api.GroqLimitError, ollama_api.OllamaLimitError) as error:
+            raise ProviderError("rate_limit", getattr(error, "retry_after", None),
+                                daily=getattr(error, "daily", False)) from None
 
     return generate
 
@@ -287,3 +323,13 @@ def legacy_metadata(key, model):
     if key:
         return ProviderProfile("legacy-groq", "Groq", *PRESETS["Groq"], model=groq_api.MODEL).metadata()
     return None
+
+
+def retry_after_seconds(value, now=None):
+    if not value:
+        return None
+    try:
+        return float(int(value)) if value.isdecimal() else max(
+            0, parsedate_to_datetime(value).timestamp() - (time() if now is None else now))
+    except (ValueError, TypeError, OverflowError):
+        return None

@@ -56,12 +56,37 @@ MIGRATIONS = (
         "ALTER TABLE tests ADD COLUMN provider_json TEXT",
         "ALTER TABLE tests ADD COLUMN token_usage_json TEXT",
     ),
+    (
+        """CREATE TABLE api_requests (
+            id TEXT PRIMARY KEY, test_id TEXT REFERENCES tests(id), started REAL NOT NULL,
+            estimated INTEGER NOT NULL, actual INTEGER, usage_json TEXT, outcome TEXT,
+            retry_after REAL, interaction INTEGER, model TEXT
+        )""",
+        """CREATE TABLE api_scopes (
+            request_id TEXT REFERENCES api_requests(id), scope TEXT NOT NULL,
+            PRIMARY KEY(request_id,scope)
+        )""",
+        "CREATE INDEX api_scopes_by_scope ON api_scopes(scope)",
+        "CREATE INDEX api_requests_by_start ON api_requests(started)",
+        "CREATE TABLE api_cooldowns (scope TEXT PRIMARY KEY, until REAL NOT NULL)",
+        """CREATE TABLE execution_queues (
+            id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, status TEXT NOT NULL,
+            scheduled_at REAL, owner TEXT, updated_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE queue_items (
+            queue_id TEXT REFERENCES execution_queues(id), position INTEGER,
+            prompt TEXT NOT NULL, status TEXT NOT NULL, result TEXT,
+            PRIMARY KEY(queue_id,position)
+        )""",
+    ),
+
 )
 
 
 class RunStore:
-    def __init__(self, path=DEFAULT_DATABASE):
+    def __init__(self, path=DEFAULT_DATABASE, *, timeout=10):
         self.path = path
+        self.timeout = timeout
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.transaction() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -76,7 +101,7 @@ class RunStore:
 
     @contextmanager
     def transaction(self):
-        with closing(sqlite3.connect(self.path, timeout=10)) as connection:
+        with closing(sqlite3.connect(self.path, timeout=self.timeout)) as connection:
             connection.execute("PRAGMA foreign_keys = ON")
             with connection:
                 yield connection
