@@ -138,6 +138,16 @@ MIGRATIONS = (
         "CREATE INDEX tests_by_library_collection ON tests(library_collection_id,started_at)",
     ),
 
+    (
+        """CREATE TABLE evaluation_rubrics(scope TEXT PRIMARY KEY, revision INTEGER NOT NULL, snapshot TEXT NOT NULL)""",
+        """CREATE TABLE evaluations(id TEXT PRIMARY KEY,test_id TEXT REFERENCES tests(id) ON DELETE CASCADE,
+             created_at TEXT NOT NULL,payload TEXT NOT NULL)""",
+        "CREATE INDEX evaluations_by_test ON evaluations(test_id,created_at DESC)",
+        """CREATE TABLE evaluation_reviews(id INTEGER PRIMARY KEY, evaluation_id TEXT REFERENCES evaluations(id)
+             ON DELETE CASCADE, created_at TEXT NOT NULL,payload TEXT NOT NULL)""",
+        "CREATE TABLE evaluation_baselines(scope TEXT PRIMARY KEY,payload TEXT NOT NULL)",
+    ),
+
 )
 
 

@@ -135,7 +135,8 @@ class LibraryView(ttk.Frame):
         if identifier:
             self.identifier = identifier
             self.refresh()
-            self.tree.selection_set(str(identifier))
+            if self.tree.exists(str(identifier)):
+                self.tree.selection_set(str(identifier))
             self.status.set("Prompt salvo.")
 
     def manage_collection(self):

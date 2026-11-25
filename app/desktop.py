@@ -24,6 +24,7 @@ from src.chatprobe.desktop_conversation import ConversationView
 from src.chatprobe.desktop_keys import KeysTab
 from src.chatprobe.desktop_execution import ExecutionDialog
 from src.chatprobe.desktop_history import HistoryView
+from src.chatprobe.desktop_evaluation import evaluate_selection
 from src.chatprobe.desktop_support import SupportView
 from src.chatprobe.desktop_library import LibraryView
 from src.chatprobe.storage.library import Library
@@ -227,6 +228,10 @@ class ChatProbeWindow:
         self.history = HistoryView(self.history_tab, HistoryStore(self.queue_store.store) if self.queue_store else None,
                                    self.stage_history, self.enqueue_history, running=lambda: self.running)
         self.history.pack(fill="both", expand=True)
+        self.history.evaluation_button = ttk.Button(
+            self.history.actions, text="Avaliações", command=lambda: self.history.retrieve(
+                lambda records: evaluate_selection(self.history, records, self.catalog)))
+        self.history.evaluation_button.pack(side="left")
         self.library = LibraryView(self.library_tab, Library(self.queue_store.store) if self.queue_store else None,
                                    self.load_library_prompt, self.queue_library_prompts, self.library_history)
         self.library.pack(fill="both", expand=True)

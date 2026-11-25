@@ -258,13 +258,13 @@ class Provider:
                                       checkpoint=lambda: None, wait_for=reject_wait,
                                       records=[], model=self.profile.model)
 
-    def complete(self, messages):
+    def complete(self, messages, *, schema=None):
         kind, model = self.profile.kind, self.profile.model
         temperature = self.profile.temperature
         options = {} if temperature is None else {"temperature": temperature}
         if kind == "ollama":
             data = self.request("/api/chat", {"model": model, "messages": messages,
-                                "format": ACTION_SCHEMA, "stream": False, "options": {"num_predict": 1024, **options}})
+                                "format": schema or ACTION_SCHEMA, "stream": False, "options": {"num_predict": 1024, **options}})
             return data["message"]["content"], token_usage(data, "prompt_eval_count", "eval_count")
         if kind == "gemini":
             configuration = {"maxOutputTokens": 1024, "responseMimeType": "application/json", "responseSchema": {
@@ -273,6 +273,8 @@ class Provider:
                     "text": {"type": "STRING"},
                 }, "required": ["action", "text"],
             }, **options}
+            if schema is not None:
+                configuration["responseSchema"] = gemini_schema(schema)
             data = self.request("/models/" + quote(model.removeprefix("models/"), safe="") + ":generateContent", {
                 "systemInstruction": {"parts": [{"text": messages[0]["content"]}]},
                 "contents": [{"role": "user", "parts": [{"text": messages[1]["content"]}]}],
@@ -333,3 +335,12 @@ def retry_after_seconds(value, now=None):
             0, parsedate_to_datetime(value).timestamp() - (time() if now is None else now))
     except (ValueError, TypeError, OverflowError):
         return None
+
+
+def gemini_schema(value):
+    if isinstance(value, list):
+        return [gemini_schema(item) for item in value]
+    if isinstance(value, dict):
+        return {key: item.upper() if key == "type" else gemini_schema(item)
+                for key, item in value.items() if key != "additionalProperties"}
+    return value
