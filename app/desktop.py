@@ -24,7 +24,7 @@ from src.chatprobe.desktop_conversation import ConversationView
 from src.chatprobe.desktop_keys import KeysTab
 from src.chatprobe.desktop_execution import ExecutionDialog
 from src.chatprobe.desktop_history import HistoryView
-from src.chatprobe.desktop_support import SupportView
+from src.chatprobe.desktop_support import SupportView, setup_assistant
 from src.chatprobe.desktop_library import LibraryView
 from src.chatprobe.storage.library import Library
 from src.chatprobe.history_rerun import RerunDraft
@@ -32,7 +32,7 @@ from src.chatprobe.desktop_night_queue import NightQueue
 from src.chatprobe.desktop_layout import ExecutionPanel, Navigation, ScrollPanel
 from src.chatprobe.desktop_prompt import PromptEditor
 from src.chatprobe.desktop_providers import ProviderManager
-from src.chatprobe.desktop_preferences import load_preferences, save_preferences, save_report, write_text_atomically
+from src.chatprobe.desktop_preferences import SETTINGS_FILE, load_preferences, save_preferences, save_report, write_text_atomically
 from src.chatprobe.desktop_theme import DesktopTheme
 from src.chatprobe.provider_catalog import ProviderCatalog
 from src.chatprobe.providers import PRESETS, Provider, ProviderError, ProviderProfile
@@ -1364,6 +1364,8 @@ class ChatProbeWindow:
             messagebox.showerror("Pasta do relatório", str(error), parent=self.root)
 
     def close(self):
+        if self.restoring:
+            return
         if self.running:
             messagebox.showinfo("Teste em andamento", "Use Parar para encerrar o lote e salvar os resultados.",
                                 parent=self.root)
@@ -1375,7 +1377,10 @@ def main():
     if getattr(sys, "frozen", False):
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
     root = tk.Tk()
-    ChatProbeWindow(root)
+    first_use = not SETTINGS_FILE.exists()
+    app = ChatProbeWindow(root)
+    if first_use:
+        root.after_idle(lambda: setup_assistant(app))
     root.mainloop()
 
 

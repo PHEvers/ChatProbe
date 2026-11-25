@@ -21,7 +21,8 @@ class SupportView(ttk.Frame):
         self.app, self.database = app, database
         self.status = tk.StringVar()
         self.busy = False
-        for title, command in (("Primeiros passos", self.guide), ("Diagnóstico", self.check),
+        for title, command in (("Assistente de configuração", lambda: setup_assistant(self.app)),
+                               ("Primeiros passos", self.guide), ("Diagnóstico", self.check),
                                ("Criar backup...", self.backup), ("Restaurar backup...", self.restore),
                                ("Versões no GitHub", self.releases)):
             ttk.Button(self, text=title, command=command).pack(anchor="w", pady=3)
@@ -102,3 +103,56 @@ class SupportView(ttk.Frame):
     @staticmethod
     def releases():
         webbrowser.open("https://github.com/PHEvers/ChatProbe/releases")
+
+
+def setup_assistant(app):
+    """Reaproveita os perfis vigentes e salva as preferências ao concluir."""
+    from dataclasses import replace
+    from src.chatprobe.chat_url import validate_chat_url
+
+    dialog = tk.Toplevel(app.root)
+    dialog.title("Configuração inicial")
+    dialog.transient(app.root)
+    dialog.geometry("600x340")
+    pages = ttk.Notebook(dialog)
+    pages.pack(fill="both", expand=True, padx=10, pady=10)
+    connection, provider, finish = (ttk.Frame(pages, padding=12) for _ in range(3))
+    for frame, title in ((connection, "Atendimento"), (provider, "Provedor"), (finish, "Primeiro teste")):
+        pages.add(frame, text=title)
+    name = tk.StringVar(value=app.customer_name_field.get())
+    url = tk.StringVar(value=app.chat_url.get())
+    mode = tk.StringVar(value=app.mode)
+    for label, variable in (("URL do chatbot autorizado", url), ("Nome do cliente de teste", name)):
+        ttk.Label(connection, text=label).pack(anchor="w", pady=(5, 2))
+        ttk.Entry(connection, textvariable=variable).pack(fill="x")
+    ttk.Label(provider, text="Modo de execução").pack(anchor="w")
+    ttk.Combobox(provider, values=app.modes, textvariable=mode, state="readonly").pack(anchor="w")
+    ttk.Button(provider, text="Configurar modelos e credenciais",
+               command=app.open_provider_manager).pack(anchor="w", pady=6)
+    ttk.Label(finish, wraplength=480,
+              text="Na aba Teste, confira produto, perfil e prompt antes de iniciar. "
+                   "Um Roteiro JSON pode rodar sem provedor de IA.").pack(anchor="w")
+    bar = ttk.Frame(dialog)
+    bar.pack(fill="x", padx=10, pady=(0, 10))
+    def move(change):
+        index = pages.index("current")
+        pages.select(max(0, min(2, index + change)))
+    def save():
+        try:
+            value = validate_chat_url(url.get())
+            if not name.get().strip() or mode.get() not in app.modes:
+                raise ValueError("Informe o nome e um modo válido.")
+        except ValueError as error:
+            messagebox.showerror("Configuração inicial", str(error), parent=dialog)
+            return
+        if app.update_preferences(replace(app.preferences, chat_url=value, customer_name=name.get().strip(),
+                                          mode=mode.get())):
+            app.chat_url.set(value)
+            app.customer_name_field.delete(0, "end")
+            app.customer_name_field.insert(0, name.get().strip())
+            if app.mode != mode.get():
+                app.switch_mode(mode.get())
+            dialog.destroy()
+    for label, command in (("Voltar", lambda: move(-1)), ("Avançar", lambda: move(1)),
+                           ("Concluir", save), ("Mais tarde", dialog.destroy)):
+        ttk.Button(bar, text=label, command=command).pack(side="left", padx=3)
