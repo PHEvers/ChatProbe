@@ -17,7 +17,10 @@ class GroqError(Exception):
 
 
 class GroqLimitError(GroqError):
-    pass
+    def __init__(self, message, retry_after=None, *, daily=False):
+        super().__init__(message)
+        self.retry_after = retry_after
+        self.daily = daily
 
 
 def validate_key_format(key):
@@ -49,7 +52,12 @@ def _request(key, endpoint, payload=None):
             if error.code == 403:
                 raise GroqError(_forbidden_message(error, endpoint)) from None
             if error.code == 429:
-                raise GroqLimitError(_limit_message(error)) from None
+                from src.chatprobe.providers import retry_after_seconds
+                details = _read_error_details(error)
+                raise GroqLimitError(
+                    _limit_message(error, details), retry_after_seconds(error.headers.get("Retry-After")),
+                    daily=any(marker in details for marker in ("per day", "per_day", "daily limit")),
+                ) from None
             raise GroqError(f"A Groq retornou um erro HTTP {error.code}.") from None
     except (OSError, HTTPException):
         raise GroqError("Não foi possível conectar à Groq. Confira a conexão e tente novamente.") from None
@@ -76,8 +84,9 @@ def _forbidden_message(error, endpoint):
     return f"A Groq recusou a geração (HTTP 403). Confira se o projeto permite o modelo {MODEL}."
 
 
-def _limit_message(error):
-    details = _read_error_details(error)
+def _limit_message(error, details=None):
+    if details is None:
+        details = _read_error_details(error)
     if "tokens per" in details or error.headers.get("x-ratelimit-remaining-tokens") == "0":
         message = "Limite de tokens da Groq atingido."
     elif "requests per" in details:

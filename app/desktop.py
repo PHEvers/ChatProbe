@@ -3,13 +3,17 @@
 import json
 import os
 import subprocess
+import sqlite3
+from datetime import datetime
+from time import monotonic, time
+from uuid import uuid4
 import sys
 import tkinter as tk
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 
 from src.chatprobe import groq_api, ollama_api
@@ -18,15 +22,18 @@ from src.chatprobe.browser.timing import ExecutionTiming
 from src.chatprobe.chat_url import validate_chat_url
 from src.chatprobe.desktop_conversation import ConversationView
 from src.chatprobe.desktop_keys import KeysTab
+from src.chatprobe.desktop_execution import ExecutionDialog
 from src.chatprobe.desktop_night_queue import NightQueue
 from src.chatprobe.desktop_providers import ProviderManager
 from src.chatprobe.desktop_preferences import load_preferences, save_preferences, save_report, write_text_atomically
 from src.chatprobe.desktop_theme import DesktopTheme
 from src.chatprobe.provider_catalog import ProviderCatalog
-from src.chatprobe.providers import ProviderError
+from src.chatprobe.providers import Provider, ProviderError, ProviderProfile
 from src.chatprobe.runner import batch
 from src.chatprobe.runner.reports import TERMINATION_LABELS, execution_summary, legacy_conversation
-from src.chatprobe.storage.sqlite_store import DEFAULT_DATABASE
+from src.chatprobe.storage.sqlite_store import DEFAULT_DATABASE, RunStore
+from src.chatprobe.storage.queues import QueueStore, scheduled_timestamp
+from src.chatprobe.runner.consumption import ConsumptionLedger, ExecutionOptions
 from src.chatprobe.windows_credentials import WindowsCredentials
 
 
@@ -62,6 +69,21 @@ class ChatProbeWindow:
             JSON_MODE, AI_MODE, OLLAMA_MODE,
         )
         self.preferences = load_preferences()
+        try:
+            self.execution_options = ExecutionOptions(**(self.preferences.execution or {}))
+        except (TypeError, ValueError):
+            self.execution_options = ExecutionOptions()
+        self.queue_owner = uuid4().hex
+        self.app_started = time()
+        self.queue_id = None
+        self.queue_store = None
+        self.active_positions = set()
+        self.quota_scope = None
+        self.last_metrics = 0
+        try:
+            self.queue_store = QueueStore(RunStore(DEFAULT_DATABASE, timeout=0.1))
+        except (OSError, sqlite3.Error):
+            pass
         self.provider_fields = []
         self.provider_manager = None
         try:
@@ -98,7 +120,7 @@ class ChatProbeWindow:
         night_tab = ttk.Frame(self.tabs, padding=12)
         self.settings_tab = ttk.Frame(self.tabs, padding=12)
         self.tabs.add(self.test_tab, text="Teste")
-        self.tabs.add(night_tab, text="Testes noturnos")
+        self.tabs.add(night_tab, text="Fila de testes")
         self.tabs.add(self.settings_tab, text="Configurações")
         self.status = tk.StringVar(value="Pronto para executar.")
         self.warning = tk.StringVar()
@@ -192,6 +214,7 @@ class ChatProbeWindow:
         self.refresh_providers()
         self.show_mode_fields()
         self.apply_theme()
+        self.root.after(1000, self.queue_tick)
 
     def build_profile_link(self, parent):
         profile = ttk.Frame(parent)
@@ -221,7 +244,7 @@ class ChatProbeWindow:
                                  parent=self.root)
             return
         if self.provider_manager is None or not self.provider_manager.winfo_exists():
-            self.provider_manager = ProviderManager(self.root, self.catalog, self.refresh_providers)
+            self.provider_manager = ProviderManager(self.root, self.catalog, self.refresh_providers, DEFAULT_DATABASE)
         else:
             self.provider_manager.lift()
 
@@ -251,10 +274,16 @@ class ChatProbeWindow:
         self.night_run_button = ttk.Button(actions, text="Executar fila", command=lambda: self.start(nightly=True),
                                           style="Primary.TButton")
         self.night_run_button.pack(side="left")
+        ttk.Button(actions, text="Agendar…", command=self.schedule_queue).pack(side="left", padx=(6, 0))
+        ttk.Button(actions, text="Recuperar / cancelar…", command=self.manage_saved_queues).pack(side="left", padx=(6, 0))
+        ttk.Button(controls, text="Controle de execução…", command=self.edit_execution).grid(
+            row=2, column=0, sticky="w", pady=(6, 0))
         self.build_run_buttons(actions)
         self.night_view_button = ttk.Button(actions, text="Ver conversas",
                                            command=lambda: self.tabs.select(self.test_tab), state="disabled")
         self.night_view_button.pack(side="left", padx=8)
+        self.metrics = tk.StringVar()
+        ttk.Label(footer, textvariable=self.metrics, wraplength=800).pack(anchor="w")
         ttk.Label(footer, textvariable=self.status, wraplength=690).pack(anchor="w", pady=(6, 0))
         ttk.Label(footer, textvariable=self.run_status, style="Subtitle.TLabel").pack(anchor="w")
         ttk.Label(footer, textvariable=self.warning, wraplength=690, style="Warning.TLabel").pack(anchor="w")
@@ -309,6 +338,7 @@ class ChatProbeWindow:
         self.ollama_notice = ttk.Label(execution, textvariable=self.ollama_message,
                                       wraplength=300, style="Subtitle.TLabel")
 
+        ttk.Button(options, text="Controle de execução…", command=self.edit_execution).pack(anchor="w", pady=(0, 6))
         destination = ttk.Labelframe(options, text="URL do chat", padding=8)
         destination.pack(fill="x", pady=(0, 10))
         self.chat_url = tk.StringVar(value=self.preferences.chat_url)
@@ -489,7 +519,7 @@ class ChatProbeWindow:
         self.groq_key.configure(values=names)
         self.groq_key.set(selected if selected in names else names[0] if names else "")
 
-    def start(self, nightly=False):
+    def start(self, nightly=False, scheduled=None):
         if self.running:
             return
         if nightly and not self.night_queue.commit_draft():
@@ -540,14 +570,164 @@ class ChatProbeWindow:
         if not self.save_chat_url() or not self.save_customer_name():
             return
 
-        self.active_prompts = prompts
+        snapshot = {"url": self.preferences.chat_url, "mode": self.mode, "parallel": parallel,
+                    "product": product, "customer_name": customer_name,
+                    "execution": asdict(self.execution_options),
+                    "max_customer_messages": options["max_customer_messages"],
+                    "ollama_model": options.get("ollama_model"),
+                    "provider": asdict(options["ai_provider"].profile) if "ai_provider" in options else None}
+        if nightly:
+            if self.queue_store is None:
+                self.status.set("O SQLite está indisponível para a fila persistente.")
+                return
+            try:
+                identifier = self.queue_store.create(snapshot, prompts, scheduled)
+            except (OSError, sqlite3.Error):
+                self.status.set("Falha ao registrar a fila no SQLite.")
+                return
+            if scheduled is not None:
+                self.status.set("Fila agendada. Mantenha o aplicativo aberto e o computador ligado.")
+            else:
+                self.launch_saved_queue(identifier, options)
+            return
+        self.launch_execution(snapshot, total, test_inputs, options)
+
+    def edit_execution(self):
+        dialog = ExecutionDialog(self.root, self.execution_options)
+        if dialog.result is not None and self.update_preferences(
+            replace(self.preferences, execution=asdict(dialog.result))
+        ):
+            self.execution_options = dialog.result
+
+    def schedule_queue(self):
+        if self.running:
+            return
+        value = simpledialog.askstring(
+            "Agendar fila", "Data e hora no fuso do sistema (AAAA-MM-DD HH:MM).\n"
+            "Opcionalmente inclua um deslocamento, por exemplo -03:00.\n"
+            "Mantenha o aplicativo aberto e o computador ligado.", parent=self.root,
+        )
+        if value:
+            try:
+                scheduled = scheduled_timestamp(value.strip())
+            except (ValueError, OverflowError, OSError):
+                self.status.set("Informe uma data e hora futuras válidas.")
+            else:
+                self.start(nightly=True, scheduled=scheduled)
+
+    def manage_saved_queues(self):
+        if not self.queue_store:
+            self.status.set("O SQLite está indisponível.")
+            return
+        try:
+            self.queue_store.recover_stale()
+            rows = self.queue_store.available()
+        except sqlite3.Error:
+            self.status.set("Falha ao consultar as filas salvas.")
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Filas salvas")
+        identifiers = [row[0] for row in rows]
+        labels = [f"{row[0][:8]} · " + (
+            datetime.fromtimestamp(row[2]).strftime("%d/%m/%Y %H:%M") if row[1] == "scheduled" else "Itens pendentes")
+            for row in rows]
+        selection = ttk.Combobox(dialog, state="readonly", values=labels, width=38)
+        selection.pack(padx=8, pady=8)
+        if labels:
+            selection.current(0)
+        else:
+            ttk.Label(dialog, text="Nenhuma fila pendente ou agendada.").pack(padx=8)
+
+        def apply(cancel):
+            index = selection.current()
+            if index < 0:
+                return
+            identifier = identifiers[index]
+            try:
+                if cancel:
+                    if self.queue_store.cancel(identifier):
+                        self.status.set("Agendamento cancelado.")
+                else:
+                    self.launch_saved_queue(identifier)
+            except sqlite3.Error:
+                self.status.set("Falha ao atualizar a fila salva.")
+            dialog.destroy()
+
+        ttk.Button(dialog, text="Iniciar itens pendentes", command=lambda: apply(False)).pack(padx=8, pady=3)
+        ttk.Button(dialog, text="Cancelar agendamento", command=lambda: apply(True)).pack(padx=8, pady=3)
+
+    def queue_tick(self):
+        try:
+            if self.queue_store and self.running and self.queue_id:
+                self.queue_store.heartbeat(self.queue_id, self.queue_owner)
+            elif self.queue_store and not self.running:
+                self.queue_store.recover_stale()
+                for identifier, status, scheduled in self.queue_store.available():
+                    if status == "scheduled" and self.app_started <= scheduled <= time():
+                        if not self.launch_saved_queue(identifier):
+                            # A stale or invalid scheduled profile requires explicit recovery.
+                            self.queue_store.unschedule(identifier)
+                        break
+        except sqlite3.Error:
+            self.status.set("Falha ao consultar o agendamento no SQLite.")
+        self.root.after(2000, self.queue_tick)
+
+    def launch_saved_queue(self, identifier, options=None):
+        if self.running:
+            return False
+        try:
+            snapshot, items = self.queue_store.read(identifier)
+            pending = [(number, prompt) for number, prompt, status, _ in items if status == "pending"]
+            if not pending:
+                return False
+            if options is None:
+                options = {"max_customer_messages": snapshot["max_customer_messages"]}
+                if snapshot["mode"] == AI_MODE:
+                    profile = ProviderProfile(**snapshot["provider"])
+                    current = self.catalog.profiles.get(profile.id) if self.catalog else None
+                    # Use current secret only if it still belongs to the saved destination.
+                    if current is None or (current.base_url, current.kind) != (profile.base_url, profile.kind):
+                        raise ValueError("Restaure o perfil e o destino originais para recuperar a fila.")
+                    options["ai_provider"] = Provider(profile, self.catalog.resolve(current).key)
+                elif snapshot["mode"] == OLLAMA_MODE:
+                    options["ollama_model"] = snapshot["ollama_model"]
+                elif snapshot["mode"] == GROQ_MODE:
+                    name = self.groq_key.get()
+                    if not name and self.credentials:
+                        names = self.credentials.list_names("groq")
+                        name = names[0] if names else ""
+                    secret = self.credentials.get("groq", name) if self.credentials and name else None
+                    if not secret:
+                        raise ValueError("Configure uma chave Groq para recuperar a fila.")
+                    options["key"] = secret
+            inputs = [(smoke.parse_scenario(json.loads(prompt)), "") if snapshot["mode"] == JSON_MODE
+                      else (None, prompt) for _, prompt in pending]
+            if not self.queue_store.claim(identifier, self.queue_owner):
+                return False
+        except (OSError, ValueError, KeyError, ProviderError, sqlite3.Error) as error:
+            self.status.set(str(error) if isinstance(error, (ValueError, ProviderError)) else "Falha ao recuperar a fila.")
+            return False
+        self.launch_execution(snapshot, len(pending), inputs, options, queue_id=identifier,
+                              positions=[number for number, _ in pending],
+                              items=items)
+        return True
+
+    def launch_execution(self, snapshot, total, test_inputs, options, *, queue_id=None, positions=None, items=()):
+        self.queue_id = queue_id
+        self.active_positions.clear()
+        self.quota_scope = None
+        self.active_prompts = [prompt for _, prompt, _, _ in items] if queue_id else None
+        self.execution_mode = snapshot["mode"]
         self.report = None
         self.saved_report_path = None
-        self.results.clear()
+        self.results = {number: result for number, _, _, result in items if result is not None}
+        self.completed_before_launch = len(self.results)
+        self.previously_ended = sum(status not in {"pending", "running"} and result is None
+                                    for _, _, status, result in items)
         self.run_control = batch.BatchControl()
         self.batch_timing = ExecutionTiming()
-        self.total = total
-        self.parallel = parallel
+        self.total = len(items) if queue_id else total
+        self.parallel = min(snapshot["parallel"], total)
         self.result_field.configure(state="disabled", values=())
         self.result_field.set("")
         self.set_running(True)
@@ -557,13 +737,21 @@ class ChatProbeWindow:
         self.conversation.show()
         self.warning.set("")
         self.warning_label.pack_forget()
+        if self.results:
+            choices = [f"Teste {number}" for number in sorted(self.results)]
+            self.result_field.configure(state="readonly", values=choices)
+            self.result_field.set(choices[0])
+            self.show_result()
         self.status.set(f"Iniciando {total} teste(s).")
         scenario, objective = test_inputs[0]
         Thread(
-            target=batch.run_batch, args=(self.preferences.chat_url, total, parallel, self.events),
-            kwargs={"scenario": scenario, "objective": objective, "product": product,
-                    "customer_name": customer_name, "headless": nightly,
-                    "test_inputs": tuple(test_inputs) if nightly else None,
+            target=batch.run_batch, args=(snapshot["url"], total, self.parallel, self.events),
+            kwargs={"scenario": scenario, "objective": objective, "product": snapshot["product"],
+                    "customer_name": snapshot["customer_name"], "headless": bool(queue_id),
+                    "test_inputs": tuple(test_inputs) if queue_id else None, "positions": positions,
+                    "queue_id": queue_id, "queue_owner": self.queue_owner,
+                    "execution": ExecutionOptions(**snapshot["execution"]),
+                    "related_profiles": tuple(self.catalog.profiles.values()) if self.catalog else (),
                     "control": self.run_control, "database_path": DEFAULT_DATABASE, **options},
         ).start()
         self.root.after(100, self.poll)
@@ -637,10 +825,10 @@ class ChatProbeWindow:
         if not self.running or self.run_control.stopped.is_set():
             return
         if self.run_control.ready.is_set():
-            self.run_control.ready.clear()
-            self.run_status.set("Fila pausada. Os testes em andamento podem terminar.")
+            self.run_control.pause()
+            self.run_status.set("Fila pausada. As operações em andamento terminam antes da próxima etapa.")
         else:
-            self.run_control.ready.set()
+            self.run_control.resume()
             self.run_status.set("")
         self.update_run_buttons()
 
@@ -657,6 +845,12 @@ class ChatProbeWindow:
                 if kind == "progress":
                     number, message = value
                     self.status.set(f"Teste {number}/{self.total} — {message}")
+                elif kind == "active":
+                    self.active_positions.add(value)
+                elif kind == "queue_wait":
+                    self.status.set(f"Intervalo entre testes · {value} s")
+                elif kind == "quota_scope":
+                    self.quota_scope, self.quota_metadata = value
                 elif kind == "limit":
                     if value not in self.warning.get():
                         previous = self.warning.get()
@@ -676,9 +870,36 @@ class ChatProbeWindow:
                     self.finish()
                     return
         except Empty:
+            self.refresh_metrics()
             self.root.after(100, self.poll)
 
+    def refresh_metrics(self):
+        if monotonic() - self.last_metrics < 1:
+            return
+        self.last_metrics = monotonic()
+        ended = len(self.results) + self.previously_ended
+        active = len(self.active_positions)
+        pending = max(0, self.total - ended - active)
+        errors = sum(result["status"] in {"error", "rate_limited"} for result in self.results.values())
+        elapsed = self.batch_timing.fields(finished=False)["duration_seconds"]
+        text = (f"{self.total} testes · {pending} pendentes · {active} ativos · {ended} encerrados · "
+                f"{errors} erros · {ended / self.total:.0%} · {elapsed:.0f} s")
+        observed = len(self.results) - self.completed_before_launch
+        if observed > 0 and self.running:
+            text += f" · restante ~{elapsed * (self.total - ended) / observed:.0f} s"
+        if self.quota_scope and self.queue_store:
+            try:
+                minute, day = ConsumptionLedger(self.queue_store.store).snapshot(self.quota_scope)
+                text += (f"\n{self.quota_metadata['name']} · {self.quota_metadata['model']} · "
+                         f"requisições/min {minute[0]}, /dia {day[0]} · "
+                         f"tokens medidos/min {minute[1]}, /dia {day[1]} · "
+                         f"chamadas sem métrica/min {minute[2]}, /dia {day[2]}")
+            except sqlite3.Error:
+                pass
+        self.metrics.set(text)
+
     def add_result(self, result):
+        self.active_positions.discard(result["test"])
         self.results[result["test"]] = result
         options = [f"Teste {number}" for number in sorted(self.results)]
         self.result_field.configure(state="readonly", values=options)
@@ -695,11 +916,11 @@ class ChatProbeWindow:
 
     def report_content(self, finished):
         results = [self.results[number] for number in sorted(self.results)]
-        pending = self.total - len(results)
+        pending = self.total - len(results) - self.previously_ended
         warning = self.warning.get()
         stopped = self.run_control.stopped.is_set()
         if (
-            self.active_prompts is None and self.mode == JSON_MODE and self.total == 1 and results
+            self.active_prompts is None and self.execution_mode == JSON_MODE and self.total == 1 and results
             and not stopped and results[0]["turns"] and results[0]["status"] != "error"
         ):
             report = legacy_conversation(results[0])
@@ -710,7 +931,13 @@ class ChatProbeWindow:
                       "not_started" if finished else "pending": pending,
                       "tests": results, **self.batch_timing.fields(finished=finished)}
             if self.active_prompts is not None:
-                report.update(prompts=self.active_prompts, finished=finished)
+                report.update(prompts=self.active_prompts, finished=finished, queue_id=self.queue_id)
+                usage = {}
+                for test in results:
+                    for metric, amount in test.get("token_usage", {}).items():
+                        usage[metric] = usage.get(metric, 0) + amount
+                if usage:
+                    report["token_usage"] = usage
             if stopped and finished:
                 report["stopped_by_user"] = True
             if warning:
@@ -726,8 +953,10 @@ class ChatProbeWindow:
 
     def finish(self):
         self.set_running(False)
+        self.last_metrics = 0
+        self.refresh_metrics()
         completed = sum(result["termination_reason"] == "completed" for result in self.results.values())
-        pending = self.total - len(self.results)
+        pending = self.total - len(self.results) - self.previously_ended
         self.report = self.report_content(finished=True)
         self.save_button.state(["!disabled"])
 

@@ -2,8 +2,10 @@
 
 import re
 import sqlite3
+from math import ceil
+from time import monotonic
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from threading import Event, Lock
+from threading import Condition, Event, Lock
 from unicodedata import combining, normalize
 from uuid import uuid4
 
@@ -12,6 +14,8 @@ from src.chatprobe.browser import smoke
 from src.chatprobe.browser.replies import message_text_key
 from src.chatprobe.browser.timing import ExecutionTiming
 from src.chatprobe.storage.sqlite_store import RunStore
+from src.chatprobe.runner.consumption import ConsumptionLedger, ExecutionOptions, LocalQuotaError, generate_with_controls, quota_scopes
+from src.chatprobe.storage.queues import QueueStore
 
 
 DEFAULT_MAX_CUSTOMER_MESSAGES = 6
@@ -39,14 +43,46 @@ class BatchControl:
         self.ready = Event()
         self.ready.set()
         self.stopped = Event()
+        self.changed = Condition()
+
+    def pause(self):
+        with self.changed:
+            self.ready.clear()
+            self.changed.notify_all()
+
+    def resume(self):
+        with self.changed:
+            self.ready.set()
+            self.changed.notify_all()
 
     def stop(self):
-        self.stopped.set()
-        self.ready.set()
+        with self.changed:
+            self.stopped.set()
+            self.ready.set()
+            self.changed.notify_all()
 
     def check_stop(self):
         if self.stopped.is_set():
             raise BatchStopped
+
+    def checkpoint(self):
+        with self.changed:
+            while not self.ready.is_set():
+                self.check_stop()
+                self.changed.wait()
+            self.check_stop()
+
+    def wait(self, seconds, notify=lambda remaining: None):
+        deadline = monotonic() + seconds
+        while True:
+            self.checkpoint()
+            with self.changed:
+                self.check_stop()
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    return
+                notify(ceil(remaining))
+                self.changed.wait(timeout=min(1, remaining))
 
 
 def message_signature(text):
@@ -97,8 +133,15 @@ class OpeningVariations:
 
 def run_test(number, url, scenario, objective, key, paused, events, *, product=smoke.DEFAULT_PRODUCT,
              customer_name=None, opening_variations=None, ollama_model=None, headless=False,
-             max_customer_messages=DEFAULT_MAX_CUSTOMER_MESSAGES, control=None, store=None, batch_id=None, ai_provider=None):
+             max_customer_messages=DEFAULT_MAX_CUSTOMER_MESSAGES, control=None, store=None, batch_id=None, ai_provider=None,
+             execution=None, ledger=None, related_profiles=()):
+    policy = execution or ExecutionOptions()
     timing = ExecutionTiming()
+    waits = {}
+    api_calls = []
+    metadata = ai_provider.profile.metadata() if ai_provider else legacy_metadata(key, ollama_model)
+    scopes = quota_scopes(ai_provider.profile if ai_provider else None, metadata,
+                          batch_id or "", policy, related_profiles)
     turns = []
     status = "completed"
     detail = ""
@@ -106,7 +149,6 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
     name_sent = False
     provider = ai_provider.profile.name if ai_provider else "Ollama" if ollama_model else "Groq"
     generate = ai_provider.generate if ai_provider else legacy_provider(key, ollama_model) if key or ollama_model else None
-    metadata = ai_provider.profile.metadata() if ai_provider else legacy_metadata(key, ollama_model)
     usage = {}
     test_id = None
 
@@ -131,9 +173,29 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
 
     def checkpoint():
         if control is not None:
-            control.check_stop()
+            control.checkpoint()
         if paused.is_set():
             raise BatchPaused
+
+    def wait_for(seconds, label):
+        started = monotonic()
+        try:
+            (control or BatchControl()).wait(seconds, lambda remaining: progress(f"{label} · {remaining} s"))
+        finally:
+            waits[label] = waits.get(label, 0) + monotonic() - started
+
+    def before_message():
+        if turns and policy.interaction_seconds:
+            remaining = policy.interaction_seconds - (monotonic() - last_send)
+            if remaining > 0:
+                wait_for(remaining, "Intervalo entre interações")
+        checkpoint()
+
+    last_send = 0.0
+
+    def record_send():
+        nonlocal last_send
+        last_send = monotonic()
 
     def progress(message):
         nonlocal status, detail, reason
@@ -169,7 +231,11 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
                      else f"{provider.capitalize()} sugeriu repetir uma mensagem. Solicitando nova resposta.")
             if variation is not None:
                 options["opening_variation"] = variation.context(number)
-            decision = generate(objective, history, product=product, **options)
+            decision = generate_with_controls(
+                generate, objective, history, {"product": product, **options}, ledger=ledger,
+                scopes=scopes, test_id=test_id, policy=policy, checkpoint=checkpoint, wait_for=wait_for,
+                records=api_calls, model=metadata["model"],
+            )
             for metric, count in decision.usage.items():
                 usage[metric] = usage.get(metric, 0) + count
             action, text = decision.kind, decision.text
@@ -201,12 +267,21 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
         if customer_name is not None:
             args.append(f"--customer-name={customer_name}")
         browser_options = {"checkpoint": checkpoint} if control is not None else {}
+        if execution is not None and control is not None:
+            browser_options["check_stop"] = control.check_stop
         if store is not None:
             browser_options["on_turn"] = save_turn
+        if policy.interaction_seconds:
+            browser_options["before_message"] = before_message
+            browser_options["on_send"] = record_send
         smoke.main(args, log=progress, scenario=scenario, turns=turns,
                    next_message=next_message if generate else None, **browser_options)
     except BatchStopped:
         status, reason, detail = "stopped", "interrupted", "Teste interrompido a pedido do usuário."
+    except LocalQuotaError as error:
+        paused.set()
+        status, reason, detail = "rate_limited", "local_quota", str(error)
+        events.put(("limit", detail))
     except ProviderError as error:
         detail = str(error)
         if error.code == "rate_limit":
@@ -228,6 +303,11 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
 
     result = {"test": number, "status": status, "termination_reason": reason, "turns": turns,
               "detail": detail, **timing.fields()}
+    if waits:
+        result["wait_seconds"] = {label: round(seconds, 3) for label, seconds in waits.items()}
+        result["processing_seconds"] = max(0, round(result["duration_seconds"] - sum(waits.values()), 3))
+    if api_calls:
+        result["api_calls"] = api_calls
     if metadata is not None:
         result["provider"] = metadata
         if usage:
@@ -242,8 +322,11 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
 def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=None,
               product=smoke.DEFAULT_PRODUCT, customer_name=None, ollama_model=None,
               max_customer_messages=DEFAULT_MAX_CUSTOMER_MESSAGES, test_inputs=None, headless=False,
-              control=None, database_path=None, ai_provider=None):
+              control=None, database_path=None, ai_provider=None, execution=None,
+              queue_id=None, queue_owner=None, positions=None, related_profiles=()):
     paused = Event()
+    policy = execution or ExecutionOptions()
+    queues = None
     run_control = control if control is not None else BatchControl()
     guided = bool(ai_provider or key or ollama_model)
     opening_variations = OpeningVariations() if guided and test_inputs is None and total > 1 else None
@@ -253,9 +336,20 @@ def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=
         if test_inputs is not None and len(test_inputs) != total:
             raise ValueError("A quantidade de testes deve coincidir com a fila de prompts.")
         store = open_store(database_path, events) if database_path is not None else None
-        batch_id = uuid4().hex
+        batch_id = queue_id or uuid4().hex
+        queues = QueueStore(store) if queue_id and store else None
+        profile = ai_provider.profile if ai_provider else None
+        metadata = profile.metadata() if profile else legacy_metadata(key, ollama_model)
+        scopes = quota_scopes(profile, metadata, batch_id, policy, related_profiles)
+        quota_required = any(quota.enabled for _, quota in scopes)
+        if (quota_required or queue_id) and store is None:
+            raise ValueError("O SQLite é necessário para aplicar cotas ou executar esta fila.")
+        ledger = ConsumptionLedger(store) if guided and store else None
+        if ledger and execution is not None:
+            events.put(("quota_scope", (scopes[0][0], metadata)))
+        cooldown_until = 0.0
         with ThreadPoolExecutor(max_workers=parallel) as pool:
-            running = set()
+            running = {}
             number = 1
 
             def has_pending_tests():
@@ -264,25 +358,52 @@ def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=
             while running or has_pending_tests():
                 if not running:
                     run_control.ready.wait()
-                while has_pending_tests() and run_control.ready.is_set() and len(running) < parallel:
+                if has_pending_tests() and run_control.ready.is_set() and len(running) < parallel:
+                    delay = cooldown_until - monotonic()
+                    if delay > 0 and not running:
+                        run_control.wait(delay, lambda n: events.put(("queue_wait", n)))
+                while (has_pending_tests() and run_control.ready.is_set() and len(running) < parallel
+                       and monotonic() >= cooldown_until):
                     test_scenario, test_objective = (
                         (scenario, objective) if test_inputs is None else test_inputs[number - 1]
                     )
-                    future = pool.submit(run_test, number, url, test_scenario, test_objective, key,
+                    position = positions[number - 1] if positions is not None else number
+                    if queues:
+                        queues.set_item(queue_id, position, "running")
+                    future = pool.submit(run_test, position, url, test_scenario, test_objective, key,
                                          paused, events, product=product, customer_name=customer_name,
                                          opening_variations=opening_variations, ollama_model=ollama_model,
                                          headless=headless, max_customer_messages=max_customer_messages,
-                                         control=control, store=store, batch_id=batch_id, ai_provider=ai_provider)
-                    running.add(future)
+                                         control=control, store=store, batch_id=batch_id, ai_provider=ai_provider,
+                                         execution=execution, ledger=ledger, related_profiles=related_profiles)
+                    running[future] = position
+                    if execution is not None:
+                        events.put(("active", position))
                     number += 1
                 if running:
-                    done, running = wait(running, return_when=FIRST_COMPLETED)
+                    delay = cooldown_until - monotonic()
+                    timeout = delay if delay > 0 and has_pending_tests() and len(running) < parallel else None
+                    done, _ = wait(running, timeout=timeout, return_when=FIRST_COMPLETED)
+                    if done:
+                        cooldown_until = monotonic() + policy.test_seconds
                     for future in done:
-                        events.put(("result", future.result()))
+                        position = running.pop(future)
+                        result = future.result()
+                        if queues:
+                            queues.set_item(queue_id, position, result["status"], result)
+                        events.put(("result", result))
+    except BatchStopped:
+        pass
     except Exception as error:
         events.put(("batch_error", str(error)))
     finally:
-        events.put(("finished", None))
+        try:
+            if queues:
+                queues.close(queue_id, queue_owner)
+        except (OSError, sqlite3.Error):
+            events.put(("storage_error", "Falha ao fechar o registro da fila. Os itens poderão ser recuperados."))
+        finally:
+            events.put(("finished", None))
 
 
 def open_store(path, events):

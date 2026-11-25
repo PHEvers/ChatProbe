@@ -12,7 +12,9 @@ class OllamaError(Exception):
 
 
 class OllamaLimitError(OllamaError):
-    pass
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 def _request(endpoint, payload=None):
@@ -27,7 +29,9 @@ def _request(endpoint, payload=None):
                 if response.status == 404 and payload is not None:
                     raise OllamaError("O modelo selecionado não está disponível. Confira os modelos no Ollama.")
                 if response.status == 429:
-                    raise OllamaLimitError("O Ollama atingiu um limite de requisições (HTTP 429).")
+                    from src.chatprobe.providers import retry_after_seconds
+                    raise OllamaLimitError("O Ollama atingiu um limite de requisições (HTTP 429).",
+                                           retry_after_seconds(response.getheader("Retry-After")))
                 if response.status != 200:
                     raise OllamaError(f"O Ollama retornou um erro HTTP {response.status}.")
                 return json.load(response)

@@ -48,19 +48,19 @@ Se a Groq recusar uma chamada por limite de tokens ou de requisições, o ChatPr
 
 O ChatProbe acessa o Ollama em `http://127.0.0.1:11434` e gera as mensagens do cliente sem chave de API. O Chromium usa a rede para acessar o chat de homologação. [Instalar o Ollama](https://ollama.com/download)
 
-### Testes noturnos
+### Fila de testes
 
-Na aba **Testes noturnos**, escreva um prompt inicial e clique em **Adicionar à fila**. Repita para cada cenário. Para editar um item, selecione-o e clique em **Salvar alterações** depois de alterar o texto. A fila fica salva e usa o modo, o modelo e o nome definidos em **Configurações**. No modo JSON, adicione um roteiro por item.
+Na aba **Fila de testes**, escreva um prompt inicial e clique em **Adicionar à fila**. Repita para cada cenário. Para editar um item, selecione-o e clique em **Salvar alterações** depois de alterar o texto. A fila fica salva e usa o modo, o modelo e o nome definidos em **Configurações**. No modo JSON, adicione um roteiro por item.
 
 Clique em **Executar fila** para iniciar um teste por item, com o Chromium em segundo plano. Mantenha o computador acordado durante a execução. O JSON é atualizado a cada teste encerrado. Use **Ver conversas** para abrir os resultados no aplicativo.
 
-Nas duas abas de execução, **Pausar** deixa os testes ativos terminarem e suspende o início dos próximos. **Retomar** libera a fila. **Parar** encerra o lote após as operações em andamento e salva as conversas capturadas.
+Nas abas de execução, **Pausar** suspende novos testes e interações em pontos seguros. **Retomar** revalida as cotas. **Parar** cancela as esperas e preserva as conversas capturadas e os itens pendentes. Use **Controle de execução** para ajustar intervalos, cotas e tentativas. A fila também pode ser agendada ou recuperada pelo SQLite. Consulte o [guia da Fase 3](docs/fase-3-execucao.md).
 
 Para rodar a janela desktop diretamente no ambiente do WSL já preparado com Playwright e Chromium, use `python -m app.desktop` na raiz do projeto.
 
 ## Configurar provedores de IA
 
-Em **Configurações → Provedores de IA**, cadastre um perfil e selecione um modelo. Use o modo **Provedor de IA** para executar com o perfil padrão ou escolher outro nas abas **Teste** e **Testes noturnos**. Há predefinições para APIs compatíveis com Chat Completions, Ollama, Google Gemini e Anthropic Claude. Os adaptadores Gemini e Claude ainda aguardam validação com contas reais. Consulte o [guia da Fase 2](docs/fase-2-provedores.md).
+Em **Configurações → Provedores de IA**, cadastre um perfil e selecione um modelo. Use o modo **Provedor de IA** para executar com o perfil padrão ou escolher outro nas abas **Teste** e **Fila de testes**. Há predefinições para APIs compatíveis com Chat Completions, Ollama, Google Gemini e Anthropic Claude. Os adaptadores Gemini e Claude ainda aguardam validação com contas reais. Consulte o [guia da Fase 2](docs/fase-2-provedores.md).
 
 ## Interface Streamlit
 
