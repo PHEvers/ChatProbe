@@ -164,6 +164,7 @@ class HistoryView(ttk.Frame):
         self.status = tk.StringVar(value="Abra o Histórico para carregar os registros.")
         ttk.Label(toolbar, textvariable=self.status, wraplength=735, style="Subtitle.TLabel").pack(fill="x")
         actions = ttk.Frame(toolbar)
+        self.actions = actions
         actions.pack(fill="x", pady=(4, 0))
         self.rerun_button = ttk.Button(actions, text="Reexecutar teste",
                                        command=lambda: self.retrieve(self.rerun_single))
@@ -238,24 +239,24 @@ class HistoryView(ttk.Frame):
         self.palette = palette
         self.detail.apply_palette(palette)
 
-    def submit(self, operation, callback, *, valid=lambda: True):
+    def submit(self, operation, callback, *, valid=lambda: True, on_error=None):
         def perform():
             try:
-                self.completed.put((callback, operation(), None, valid))
+                self.completed.put((callback, operation(), None, valid, on_error))
             except (OSError, TypeError, ValueError, sqlite3.Error) as error:
                 detail = "Falha de acesso ao histórico local."
                 if isinstance(error, ValueError) and not isinstance(error, json.JSONDecodeError):
                     detail = str(error)
-                self.completed.put((callback, None, detail, valid))
+                self.completed.put((callback, None, detail, valid, on_error))
         self.pool.submit(perform)
 
     def poll(self):
         try:
             while True:
-                callback, value, error, valid = self.completed.get_nowait()
+                callback, value, error, valid, on_error = self.completed.get_nowait()
                 if valid():
                     if error:
-                        self.status.set(error)
+                        (on_error or self.status.set)(error)
                     else:
                         callback(value)
         except Empty:

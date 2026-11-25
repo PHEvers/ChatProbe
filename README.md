@@ -6,6 +6,12 @@ O roteiro JSON foi validado em homologação pelo terminal. O aplicativo Windows
 
 Consulte o [mapa de andamento](docs/status-do-projeto.md) para ver as validações e as próximas entregas.
 
+## Guias
+
+- [Biblioteca de prompts](docs/fase-6-biblioteca.md)
+- [Instalação, ajuda e backup](docs/fase-7-distribuicao.md)
+- [Avaliação e regressão](docs/fase-8-avaliacao.md)
+
 ## Interface desktop
 
 As abas **Teste**, **Fila de testes**, **Histórico** e **Configurações** ficam à esquerda do cabeçalho. A versão aparece à direita, sob o nome ChatProbe. O [guia da interface](docs/fase-4-interface.md) reúne capturas dos temas, atalhos e a validação no Windows.

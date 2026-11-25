@@ -119,7 +119,7 @@ class PersistenceTests(unittest.TestCase):
         RunStore(self.path)
         self.assertEqual(self.query("PRAGMA user_version"), [(len(MIGRATIONS),)])
         self.assertEqual(self.query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"),
-                         [(name,) for name in ("api_cooldowns", "api_requests", "api_scopes", "events",
+                         [(name,) for name in ("api_cooldowns", "api_requests", "api_scopes", "evaluation_baselines", "evaluation_reviews", "evaluation_rubrics", "evaluations", "events",
                                                 "execution_queues", "library_collections", "messages", "prompt_revisions", "prompts", "queue_items", "tests")])
 
     def test_migrates_version_one_preserving_data(self):

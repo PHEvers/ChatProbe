@@ -24,6 +24,7 @@ from src.chatprobe.desktop_conversation import ConversationView
 from src.chatprobe.desktop_keys import KeysTab
 from src.chatprobe.desktop_execution import ExecutionDialog
 from src.chatprobe.desktop_history import HistoryView
+from src.chatprobe.desktop_evaluation import evaluate_automatic, evaluate_selection
 from src.chatprobe.desktop_support import SupportView, check_startup, setup_assistant
 from src.chatprobe.desktop_library import LibraryView
 from src.chatprobe.storage.library import Library
@@ -227,6 +228,18 @@ class ChatProbeWindow:
         self.history = HistoryView(self.history_tab, HistoryStore(self.queue_store.store) if self.queue_store else None,
                                    self.stage_history, self.enqueue_history, running=lambda: self.running)
         self.history.pack(fill="both", expand=True)
+        self.history.evaluation_button = ttk.Button(
+            self.history.actions, text="Avaliações", command=lambda: self.history.retrieve(
+                lambda records: evaluate_selection(self.history, records, self.catalog)))
+        self.history.evaluation_button.pack(side="left")
+        cohorts = ttk.Menubutton(self.history.actions, text="Em massa")
+        menu = tk.Menu(cohorts, tearoff=False)
+        for caption, source in (("Resultados filtrados sem avaliação", "filtered"),
+                                ("Lote sem avaliação", "batch"),
+                                ("Execução da coleção sem avaliação", "library_collection_run")):
+            menu.add_command(label=caption, command=lambda source=source: self.evaluation_cohort(source))
+        cohorts.configure(menu=menu)
+        cohorts.pack(side="left")
         self.library = LibraryView(self.library_tab, Library(self.queue_store.store) if self.queue_store else None,
                                    self.load_library_prompt, self.queue_library_prompts, self.library_history)
         self.library.pack(fill="both", expand=True)
@@ -237,6 +250,29 @@ class ChatProbeWindow:
         self.apply_theme()
         self.queue_timer = self.root.after(1000, self.queue_tick)
         self.root.bind("<Destroy>", self.cancel_timers, add="+")
+
+    def evaluation_cohort(self, source):
+        if not self.history.history:
+            return
+        query = self.history.query.get() if source == "filtered" else ""
+        filters = self.history.filters.copy() if source == "filtered" else {}
+        if source != "filtered":
+            current = self.history.last_record
+            field = "batch_id" if source == "batch" else "library_collection_run_id"
+            if not current or not current.get(field):
+                self.history.status.set("Selecione um teste vinculado ao grupo desejado.")
+                return
+            filters[source] = current[field]
+        def load():
+            service = self.history.history
+            return service.details(service.matching_ids(query, filters, pending_evaluation=True))
+        def open_records(records):
+            if not records:
+                self.history.status.set("Nenhum teste pendente de avaliação.")
+            elif messagebox.askyesno("Avaliação em massa", f"Preparar {len(records)} teste(s) para avaliação?",
+                                     parent=self.root):
+                evaluate_selection(self.history, records, self.catalog)
+        self.history.submit(load, open_records)
 
     def cancel_timers(self, event):
         if event.widget is self.root:
@@ -1284,6 +1320,9 @@ class ChatProbeWindow:
 
     def finish(self):
         self.set_running(False)
+        identifiers = tuple(result["id"] for result in self.results.values() if result.get("id"))
+        if identifiers and self.history.history:
+            self.history.submit(lambda: evaluate_automatic(self.history.history, identifiers), lambda _: None)
         if self.tabs.select() is self.history_tab:
             self.history.refresh()
         self.last_metrics = 0

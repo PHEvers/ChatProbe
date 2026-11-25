@@ -133,6 +133,8 @@ class NightQueue(ttk.Frame):
             titles.append(title)
             origins.append(None)
         else:
+            if isinstance(origins[index], dict) and prompts[index] != text:
+                origins[index] = dict(origins[index], library_prompt_version=None)
             prompts[index], titles[index] = text, title
         if not self.persist(prompts, titles, origins):
             return False
