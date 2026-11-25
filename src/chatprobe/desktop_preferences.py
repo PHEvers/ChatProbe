@@ -23,6 +23,7 @@ class Preferences:
     ollama_model: str = ""
     customer_name: str = ""
     night_prompts: tuple[str, ...] = ()
+    night_prompt_titles: tuple[str, ...] = ()
     chat_url: str = DEFAULT_CHAT_URL
     execution: dict | None = None
 
@@ -38,6 +39,10 @@ def load_preferences():
     if not isinstance(folder, str) or not folder or "\x00" in folder or not Path(folder).is_absolute():
         folder = DEFAULT_RESULTS_FOLDER
     prompts = values.get("night_prompts", [])
+    titles = values.get("night_prompt_titles", [])
+    titles = titles if isinstance(titles, list) else []
+    entries = [(index, prompt) for index, prompt in enumerate(prompts)
+               if isinstance(prompt, str) and prompt.strip()] if isinstance(prompts, list) else []
     try:
         chat_url = validate_chat_url(preference_text(values, "chat_url"))
     except ValueError:
@@ -50,8 +55,9 @@ def load_preferences():
         mode=preference_text(values, "mode"),
         ollama_model=preference_text(values, "ollama_model"),
         customer_name=preference_text(values, "customer_name"),
-        night_prompts=tuple(prompt for prompt in prompts if isinstance(prompt, str) and prompt.strip())
-        if isinstance(prompts, list) else (),
+        night_prompts=tuple(prompt for _, prompt in entries),
+        night_prompt_titles=tuple(titles[i] if i < len(titles) and isinstance(titles[i], str) else ""
+                                  for i, _ in entries) if titles else (),
     )
 
 

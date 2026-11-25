@@ -1,6 +1,6 @@
 # Fase 1 do ChatProbe
 
-A URL padrão continua sendo o portal Linx de homologação. O campo **Configurações → URL do chat** aceita HTTP ou HTTPS, com hostname e porta válidos. A aplicação rejeita credenciais embutidas no endereço. Preferências antigas usam o endereço padrão e a mesma configuração atende à execução individual e à fila. O Streamlit lê a preferência salva quando inicia um roteiro.
+A URL padrão continua sendo o portal Linx de homologação. O campo **Configurações → Aplicação → URL do chat** aceita HTTP ou HTTPS, com hostname e porta válidos. A aplicação rejeita credenciais embutidas no endereço. Preferências antigas usam o endereço padrão e a mesma configuração atende à execução individual e à fila. O Streamlit lê a preferência salva quando inicia um roteiro.
 
 Groq e Ollama recebem as mesmas instruções de conversa. Uma confirmação curta pode voltar a aparecer se estiver respondendo a outra etapa do chatbot. O runner compara o par formado pela resposta anterior do bot e pela confirmação do cliente em todo o histórico, incluindo retornos a etapas não consecutivas. A comparação ignora caixa, acentos e pontuação. Para mensagens fora das confirmações previstas, o runner mantém a proteção existente contra reenvio. A primeira mensagem de cada teste de um lote guiado continua variando. Essa comparação é textual e variações semânticas sem correspondência textual podem escapar da detecção.
 
@@ -29,7 +29,7 @@ O schema usa `PRAGMA user_version`. A versão 1 cria `tests`, `messages` e `even
 
 1. Faça checkout de `feature/phase-1-foundation`. Com Python 3.11 ou superior, rode `python -m unittest discover -s tests -v` na raiz.
 2. No PowerShell, execute `.\build-windows.ps1` e abra `dist\ChatProbe\ChatProbe.exe`. O script existente mantém o pacote atual e até dois anteriores.
-3. Salve a URL autorizada em **Configurações → URL do chat**. Feche e reabra o aplicativo para conferir a persistência. Tente salvar um endereço inválido e verifique a mensagem de validação.
+3. Salve a URL autorizada em **Configurações → Aplicação → URL do chat**. Feche e reabra o aplicativo para conferir a persistência. Tente salvar um endereço inválido e verifique a mensagem de validação.
 4. No modo **Roteiro JSON**, execute o exemplo individualmente e depois inclua dois roteiros na fila noturna com simultaneidade 2. Verifique a separação das conversas, os horários locais e os relatórios individuais e do lote.
 5. Teste pausa, retomada e parada durante um lote. Confirme que os testes iniciados produzem o resultado correspondente e que a parada impede novos testes.
 6. Em **Groq** e **Ollama**, use um chat de teste que solicite duas confirmações idênticas em etapas diferentes e depois volte a uma etapa já respondida. Confira se o modelo repete a confirmação quando pertinente e se o motivo indica loop quando insiste em uma resposta já recusada naquele contexto. Para simular um limite de mensagens, reduza o máximo de mensagens do cliente e confira `message_limit`.

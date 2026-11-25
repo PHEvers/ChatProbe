@@ -10,9 +10,11 @@ from unicodedata import normalize
 if __package__:
     from .replies import LISTEN_FOR_SUPPORT, ReplyCapture, message_text_key
     from .timing import ExecutionTiming, utc_now
+    from .version import VERSION
 else:
     from replies import LISTEN_FOR_SUPPORT, ReplyCapture, message_text_key
     from timing import ExecutionTiming, utc_now
+    from version import VERSION
 
 
 DEFAULT_REPLY_SELECTOR = "p[lwc-20emgi50k8t]"
@@ -21,6 +23,7 @@ PRODUCT_OPTIONS = (
     DEFAULT_PRODUCT, "SELLER", "Emsys", "Posto Facil", "Autosystem Ipiranga",
     "EMSYS", "Emporio", "D-TEF", "QR LINX", "CONECTIVIDADE",
 )
+DEFAULT_CNPJ = "13041197000159"
 DEFAULT_CUSTOMER_NAME = "Pedro Teste Automatizado"
 NAME_REQUEST = re.compile(
     r"\b(?:"
@@ -95,7 +98,7 @@ def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None, 
     interruption = ""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url", help="Endereço do chat de homologação")
-    parser.add_argument("--cnpj", default="13041197000159",
+    parser.add_argument("--cnpj", default=DEFAULT_CNPJ,
                         help="CNPJ de homologação do AutoSystem (somente números)")
     parser.add_argument("--product", default=DEFAULT_PRODUCT, help="Produto selecionado na triagem")
     parser.add_argument("--customer-name", help="Nome enviado nas etapas do roteiro que pedem o nome")
@@ -302,7 +305,7 @@ def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None, 
     if turns:
         outcome = "interrupted" if interruption else "completed"
         turns[0]["test_metadata"] = {
-            "test": 1, "status": outcome, "termination_reason": outcome,
+            "test": 1, "application_version": VERSION, "status": outcome, "termination_reason": outcome,
             "detail": interruption, **timing.fields(),
         }
     args.output.parent.mkdir(parents=True, exist_ok=True)

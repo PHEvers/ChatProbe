@@ -14,16 +14,18 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from tkinter.scrolledtext import ScrolledText
 
 from src.chatprobe import groq_api, ollama_api
 from src.chatprobe.browser import smoke
 from src.chatprobe.browser.timing import ExecutionTiming
+from src.chatprobe.browser.version import VERSION
 from src.chatprobe.chat_url import validate_chat_url
 from src.chatprobe.desktop_conversation import ConversationView
 from src.chatprobe.desktop_keys import KeysTab
 from src.chatprobe.desktop_execution import ExecutionDialog
 from src.chatprobe.desktop_night_queue import NightQueue
+from src.chatprobe.desktop_layout import ExecutionPanel, Navigation, ScrollPanel
+from src.chatprobe.desktop_prompt import PromptEditor
 from src.chatprobe.desktop_providers import ProviderManager
 from src.chatprobe.desktop_preferences import load_preferences, save_preferences, save_report, write_text_atomically
 from src.chatprobe.desktop_theme import DesktopTheme
@@ -93,6 +95,9 @@ class ChatProbeWindow:
             self.catalog = None
         self.mode = self.preferences.mode if self.preferences.mode in self.modes else self.modes[0]
         self.theme = DesktopTheme(root)
+        self.theme.apply(self.preferences.dark_mode)
+        self.prompt_titles = {}
+        self.ollama_refresh = None
         self.drafts = {
             JSON_MODE: EXAMPLE.read_text(encoding="utf-8"),
             GROQ_MODE: (
@@ -103,35 +108,31 @@ class ChatProbeWindow:
         }
         self.drafts[OLLAMA_MODE] = self.drafts[AI_MODE] = self.drafts[GROQ_MODE]
         root.title("ChatProbe")
-        root.geometry("1080x690")
-        root.minsize(800, 640)
+        root.geometry("1160x760")
+        density = float(root.tk.call("tk", "scaling")) / (4 / 3)
+        root.minsize(800, 620 + min(120, max(0, round((density - 1) * 160))))
         root.protocol("WM_DELETE_WINDOW", self.close)
 
-        content = ttk.Frame(root, padding=20)
+        content = ttk.Frame(root, padding=(14, 12))
         content.pack(fill="both", expand=True)
-        ttk.Label(content, text="ChatProbe", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(content, text="Chat de homologação", style="Subtitle.TLabel").pack(
-            anchor="w", pady=(0, 14),
-        )
-
-        self.tabs = ttk.Notebook(content)
-        self.tabs.pack(fill="both", expand=True)
-        self.test_tab = ttk.Frame(self.tabs, padding=12)
-        night_tab = ttk.Frame(self.tabs, padding=12)
-        self.settings_tab = ttk.Frame(self.tabs, padding=12)
-        self.tabs.add(self.test_tab, text="Teste")
-        self.tabs.add(night_tab, text="Fila de testes")
-        self.tabs.add(self.settings_tab, text="Configurações")
-        self.status = tk.StringVar(value="Pronto para executar.")
+        self.status = tk.StringVar(value="Selecione um produto e prepare o prompt para começar.")
         self.warning = tk.StringVar()
         self.run_status = tk.StringVar()
+        self.metrics = tk.StringVar()
         self.profile_summary = tk.StringVar()
+        self.indicators = ExecutionPanel(content, self.status, self.run_status, self.warning, self.metrics)
+        self.indicators.pack(side="bottom", fill="x", pady=(12, 0))
+        self.tabs = Navigation(content)
+        self.tabs.pack(fill="both", expand=True)
+        self.test_tab = self.tabs.add("Teste", "play")
+        night_tab = self.tabs.add("Fila de testes", "queue")
+        self.settings_tab = self.tabs.add("Configurações", "settings")
 
         columns = ttk.Panedwindow(self.test_tab, orient="horizontal")
         execution = ttk.Frame(columns, padding=(0, 0, 8, 0))
         results = ttk.Labelframe(columns, text="Conversa", padding=10)
-        columns.add(execution, weight=0)
-        columns.add(results, weight=1)
+        columns.add(execution, weight=1)
+        columns.add(results, weight=2)
 
         settings = ttk.Labelframe(execution, text="Ajustes do teste", padding=(10, 6))
         settings.pack(fill="x", pady=(0, 8))
@@ -161,14 +162,13 @@ class ChatProbeWindow:
         self.product_field.set(smoke.DEFAULT_PRODUCT)
         self.product_field.grid(row=4, column=1, pady=(5, 0), sticky="ew")
 
-        self.editor = ttk.Labelframe(execution, text=JSON_MODE, padding=8)
+        self.editor = ttk.Labelframe(execution, text=JSON_MODE, padding=10)
         self.editor.pack(fill="both", expand=True)
 
-        self.scenario = ScrolledText(
-            self.editor, wrap="word", width=28, height=6, padx=8, pady=6, font=("Segoe UI", 10),
-        )
-        self.scenario.pack(fill="both", expand=True)
-        self.scenario.insert("1.0", self.drafts[self.mode])
+        self.prompt_editor = PromptEditor(self.editor)
+        self.prompt_editor.pack(fill="both", expand=True)
+        self.scenario = self.prompt_editor.text
+        self.prompt_editor.set_value(self.drafts[self.mode])
 
         result_header = ttk.Frame(results)
         result_header.pack(fill="x", pady=(0, 6))
@@ -180,34 +180,30 @@ class ChatProbeWindow:
         self.copy_button = ttk.Button(
             result_header, text="Copiar conversa", command=self.conversation.copy, state="disabled",
         )
-        self.copy_button.pack(side="right", padx=(6, 0))
+        self.expand_conversation = ttk.Button(result_header, text="Ampliar", state="disabled",
+                                               command=self.conversation.expand)
+        self.expand_conversation.pack(side="right")
+        self.copy_button.configure(text="Copiar")
+        self.copy_button.pack(side="right", padx=(4, 6))
         self.result_status = tk.StringVar()
         ttk.Label(results, textvariable=self.result_status, style="Subtitle.TLabel").pack(
             anchor="w", pady=(0, 5),
         )
         self.conversation.pack(fill="both", expand=True)
 
-        footer = ttk.Frame(self.test_tab)
-        footer.pack(side="bottom", fill="x", pady=(12, 0))
-        actions = ttk.Frame(footer)
-        actions.pack(fill="x")
-        self.run_button = ttk.Button(actions, text="Executar teste", command=self.start,
+        actions = ttk.Frame(self.test_tab)
+        actions.pack(side="bottom", fill="x", pady=(10, 0))
+        self.run_button = ttk.Button(actions, text="Iniciar teste", command=self.start,
                                      style="Primary.TButton")
         self.run_button.pack(side="left")
         self.build_run_buttons(actions)
-        self.save_button = ttk.Button(actions, text="Salvar JSON", command=self.save,
+        self.save_button = ttk.Button(actions, text="Exportar JSON", command=self.save,
                                       state="disabled")
-        self.save_button.pack(side="left", padx=8)
+        self.save_button.pack(side="right", padx=(6, 0))
         self.open_folder_button = ttk.Button(
-            actions, text="Abrir pasta do relatório", command=self.open_report_folder, state="disabled",
+            actions, text="Abrir pasta", command=self.open_report_folder, state="disabled",
         )
-        self.open_folder_button.pack(side="left")
-        ttk.Label(footer, textvariable=self.status, wraplength=540).pack(
-            anchor="w", pady=(6, 0)
-        )
-        ttk.Label(footer, textvariable=self.run_status, style="Subtitle.TLabel").pack(anchor="w")
-        self.warning_label = ttk.Label(footer, textvariable=self.warning, wraplength=540,
-                                       style="Warning.TLabel")
+        self.open_folder_button.pack(side="right")
         columns.pack(fill="both", expand=True)
         self.build_night_tab(night_tab)
         self.build_settings(self.settings_tab)
@@ -216,20 +212,23 @@ class ChatProbeWindow:
         self.apply_theme()
         self.root.after(1000, self.queue_tick)
 
-    def build_profile_link(self, parent):
+    def build_profile_link(self, parent, *, compact=False):
         profile = ttk.Frame(parent)
         profile.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
-        ttk.Label(profile, textvariable=self.profile_summary, style="Subtitle.TLabel", wraplength=200).pack(side="left")
-        ttk.Button(profile, text="Configurações", command=lambda: self.tabs.select(self.settings_tab)).pack(
-            side="right", padx=(8, 0),
-        )
-        field = ttk.Combobox(profile, state="readonly", width=23)
+        label = ttk.Label(profile, textvariable=self.profile_summary, style="Subtitle.TLabel", wraplength=365 if compact else 230)
+        if compact:
+            label.pack(side="left", padx=(0, 10))
+        else:
+            label.pack(anchor="w")
+        field = ttk.Combobox(profile, state="readonly", width=18)
         self.provider_fields.append(field)
         return field
 
     def refresh_providers(self):
         profiles = self.catalog.profiles.values() if self.catalog else ()
-        self.provider_labels = {f"{p.name} · {p.id}": p.id for p in profiles}
+        self.provider_labels = {
+            f"{p.name} · {p.model or 'sem modelo'} [{p.id[:8]}]": p.id for p in profiles
+        }
         choices = (DEFAULT_PROVIDER_LABEL, *self.provider_labels)
         for field in self.provider_fields:
             field.configure(values=choices)
@@ -251,21 +250,26 @@ class ChatProbeWindow:
     def build_night_tab(self, tab):
         controls = ttk.Labelframe(tab, text="Ajustes do lote", padding=8)
         controls.pack(fill="x", pady=(0, 8))
-        self.night_provider = self.build_profile_link(controls)
+        self.night_provider = self.build_profile_link(controls, compact=True)
         controls.grid_columnconfigure(1, weight=1)
         parameters = ttk.Frame(controls)
         parameters.grid(row=1, column=0, columnspan=2, sticky="ew")
         ttk.Label(parameters, text="Produto").pack(side="left", padx=(0, 6))
-        self.night_product = ttk.Combobox(parameters, values=smoke.PRODUCT_OPTIONS, state="readonly", width=19)
+        self.night_product = ttk.Combobox(parameters, values=smoke.PRODUCT_OPTIONS, state="readonly", width=15)
         self.night_product.set(smoke.DEFAULT_PRODUCT)
         self.night_product.pack(side="left")
-        ttk.Label(parameters, text="Testes simultâneos").pack(side="left", padx=(12, 6))
+        ttk.Label(parameters, text="Simultâneos").pack(side="left", padx=(12, 6))
         self.night_parallel = ttk.Entry(parameters, width=4)
         self.night_parallel.insert(0, "1")
         self.night_parallel.pack(side="left")
-        self.night_limit_label = ttk.Label(parameters, text="Máx. mensagens do cliente")
+        self.night_limit_label = ttk.Label(parameters, text="Máx. interações")
         self.night_limit = ttk.Entry(parameters, width=4)
         self.night_limit.insert(0, str(batch.DEFAULT_MAX_CUSTOMER_MESSAGES))
+
+        self.execution_summary_text = tk.StringVar()
+        ttk.Label(controls, textvariable=self.execution_summary_text, style="Subtitle.TLabel",
+                  wraplength=640).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.update_execution_summary()
 
         footer = ttk.Frame(tab)
         footer.pack(side="bottom", fill="x", pady=(10, 0))
@@ -274,27 +278,32 @@ class ChatProbeWindow:
         self.night_run_button = ttk.Button(actions, text="Executar fila", command=lambda: self.start(nightly=True),
                                           style="Primary.TButton")
         self.night_run_button.pack(side="left")
-        ttk.Button(actions, text="Agendar…", command=self.schedule_queue).pack(side="left", padx=(6, 0))
-        ttk.Button(actions, text="Recuperar / cancelar…", command=self.manage_saved_queues).pack(side="left", padx=(6, 0))
-        ttk.Button(controls, text="Controle de execução…", command=self.edit_execution).grid(
-            row=2, column=0, sticky="w", pady=(6, 0))
         self.build_run_buttons(actions)
         self.night_view_button = ttk.Button(actions, text="Ver conversas",
                                            command=lambda: self.tabs.select(self.test_tab), state="disabled")
-        self.night_view_button.pack(side="left", padx=8)
-        self.metrics = tk.StringVar()
-        ttk.Label(footer, textvariable=self.metrics, wraplength=800).pack(anchor="w")
-        ttk.Label(footer, textvariable=self.status, wraplength=690).pack(anchor="w", pady=(6, 0))
-        ttk.Label(footer, textvariable=self.run_status, style="Subtitle.TLabel").pack(anchor="w")
-        ttk.Label(footer, textvariable=self.warning, wraplength=690, style="Warning.TLabel").pack(anchor="w")
+        self.night_view_button.pack(side="right")
 
-        ttk.Label(tab, text="Um teste por prompt. A fila inicia ao clicar em Executar fila.",
-                  style="Subtitle.TLabel").pack(anchor="w", pady=(0, 6))
-        self.night_queue = NightQueue(tab, self.preferences.night_prompts, self.save_night_prompts, self.status.set)
+        tools = ttk.Frame(controls)
+        tools.grid(row=3, column=0, columnspan=2, sticky="w", pady=(7, 0))
+        ttk.Button(tools, text="Controle de execução...", command=self.edit_execution).pack(side="left")
+        self.schedule_button = ttk.Button(tools, text="Agendar...", command=self.schedule_queue)
+        self.schedule_button.pack(side="left", padx=(6, 0))
+        ttk.Button(tools, text="Recuperar / cancelar...", command=self.manage_saved_queues).pack(side="left", padx=6)
+
+        self.night_queue = NightQueue(tab, self.preferences.night_prompts, self.save_night_prompts, self.status.set,
+                                      titles=self.preferences.night_prompt_titles)
         self.night_queue.pack(fill="both", expand=True)
 
-    def save_night_prompts(self, prompts):
-        return self.update_preferences(replace(self.preferences, night_prompts=prompts))
+    def save_night_prompts(self, prompts, titles):
+        return self.update_preferences(replace(self.preferences, night_prompts=prompts, night_prompt_titles=titles))
+
+    def update_execution_summary(self):
+        options = self.execution_options
+        quota = options.queue_quota or "desativada"
+        self.execution_summary_text.set(
+            f"Interações {options.interaction_seconds:g} s · entre testes {options.test_seconds:g} s · "
+            f"cota da fila (RPM RPD TPM TPD) {quota}"
+        )
 
     def build_run_buttons(self, parent):
         pause = ttk.Button(parent, text="Pausar", command=self.toggle_pause, state="disabled")
@@ -305,10 +314,44 @@ class ChatProbeWindow:
         self.stop_buttons.append(stop)
 
     def build_settings(self, tab):
-        tab.columnconfigure((0, 1), weight=1, uniform="settings")
-        options = ttk.Frame(tab)
-        options.grid(row=0, column=0, sticky="new", padx=(0, 10))
-        execution = ttk.Labelframe(options, text="Preferências de execução", padding=8)
+        categories = ttk.Notebook(tab)
+        categories.pack(fill="both", expand=True)
+
+        def page(title):
+            panel = ScrollPanel(categories)
+            categories.add(panel, text=title)
+            return panel.content
+
+        application = page("Aplicação")
+        providers = page("Provedores de IA")
+        consumption = page("Consumo")
+        storage = page("Armazenamento")
+        appearance = page("Aparência")
+
+        destination = ttk.Labelframe(application, text="Aplicação de atendimento", padding=12)
+        destination.pack(fill="x", pady=(0, 10))
+        ttk.Label(destination, text="URL do chat").pack(anchor="w", pady=(0, 4))
+        address = ttk.Frame(destination)
+        address.pack(fill="x")
+        self.chat_url = tk.StringVar(value=self.preferences.chat_url)
+        field = ttk.Entry(address, textvariable=self.chat_url)
+        field.pack(side="left", fill="x", expand=True)
+        field.bind("<Return>", self.save_chat_url)
+        ttk.Button(address, text="Salvar URL", command=self.save_chat_url).pack(side="left", padx=(8, 0))
+
+        identity = ttk.Labelframe(application, text="Identificação do cliente", padding=12)
+        identity.pack(fill="x")
+        identity.columnconfigure(1, weight=1)
+        ttk.Label(identity, text="Nome padrão").grid(row=0, column=0, sticky="w", padx=(0, 12))
+        self.customer_name_field = ttk.Entry(identity, width=20)
+        self.customer_name_field.insert(0, self.preferences.customer_name or smoke.DEFAULT_CUSTOMER_NAME)
+        self.customer_name_field.grid(row=0, column=1, sticky="ew")
+        self.customer_name_field.bind("<FocusOut>", self.save_customer_name)
+        self.customer_name_field.bind("<Return>", self.save_customer_name)
+        ttk.Label(identity, text=f"CNPJ de triagem padrão · {smoke.DEFAULT_CNPJ}",
+                  style="Subtitle.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        execution = ttk.Labelframe(providers, text="Modo de execução", padding=12)
         execution.pack(fill="x", pady=(0, 10))
         execution.columnconfigure(1, weight=1)
         ttk.Label(execution, text="Modo").grid(row=0, column=0, sticky="w", padx=(0, 10))
@@ -316,65 +359,51 @@ class ChatProbeWindow:
         self.mode_field.set(self.mode)
         self.mode_field.grid(row=0, column=1, sticky="ew")
         self.mode_field.bind("<<ComboboxSelected>>", self.change_mode)
-        ttk.Label(execution, text="Nome do cliente").grid(row=1, column=0, sticky="w", pady=(5, 0))
-        self.customer_name_field = ttk.Entry(execution, width=20)
-        self.customer_name_field.insert(0, self.preferences.customer_name or smoke.DEFAULT_CUSTOMER_NAME)
-        self.customer_name_field.grid(row=1, column=1, sticky="ew", pady=(5, 0))
-        self.customer_name_field.bind("<FocusOut>", self.save_customer_name)
-        self.customer_name_field.bind("<Return>", self.save_customer_name)
-
         self.groq_key_label = ttk.Label(execution, text="Chave Groq")
         self.groq_key = ttk.Combobox(execution, state="readonly", width=20, postcommand=self.refresh_test_keys)
         self.groq_notice = ttk.Label(
             execution, text=f"Modelo {groq_api.MODEL}. A Groq recebe o prompt e a conversa.",
-            wraplength=300, style="Subtitle.TLabel",
+            wraplength=400, style="Subtitle.TLabel",
         )
         self.ollama_model_label = ttk.Label(execution, text="Modelo Ollama")
-        self.ollama_model = ttk.Combobox(execution, state="readonly", width=20,
-                                       postcommand=self.refresh_ollama_models)
+        self.ollama_model = ttk.Combobox(execution, state="readonly", width=20, postcommand=self.refresh_ollama_models)
         self.ollama_model.set(self.preferences.ollama_model)
         self.ollama_model.bind("<<ComboboxSelected>>", self.save_ollama_model)
         self.ollama_message = tk.StringVar()
         self.ollama_notice = ttk.Label(execution, textvariable=self.ollama_message,
-                                      wraplength=300, style="Subtitle.TLabel")
+                                      wraplength=400, style="Subtitle.TLabel")
+        ttk.Button(providers, text="Gerenciar provedores...", command=self.open_provider_manager).pack(
+            anchor="w", pady=(0, 10))
+        if self.credentials:
+            keys_tab = ttk.Labelframe(providers, text="Chaves de API existentes", padding=12)
+            keys_tab.pack(fill="x")
+            self.keys_tab = KeysTab(keys_tab, self.credentials, self.refresh_test_keys)
 
-        ttk.Button(options, text="Controle de execução…", command=self.edit_execution).pack(anchor="w", pady=(0, 6))
-        destination = ttk.Labelframe(options, text="URL do chat", padding=8)
-        destination.pack(fill="x", pady=(0, 10))
-        self.chat_url = tk.StringVar(value=self.preferences.chat_url)
-        field = ttk.Entry(destination, textvariable=self.chat_url)
-        field.pack(side="left", fill="x", expand=True)
-        field.bind("<Return>", self.save_chat_url)
-        ttk.Button(destination, text="Salvar URL", command=self.save_chat_url).pack(
-            side="right", padx=(8, 0),
-        )
+        rules = ttk.Labelframe(consumption, text="Valores padrão das execuções", padding=12)
+        rules.pack(fill="x", pady=(0, 10))
+        ttk.Button(rules, text="Controle de execução...", command=self.edit_execution).pack(anchor="w")
+        ttk.Label(
+            rules, text="Intervalos, cota da fila e recuperação de falhas. As cotas por serviço e modelo ficam no gerenciador de provedores.",
+            style="Subtitle.TLabel", wraplength=530,
+        ).pack(anchor="w", pady=(8, 0))
+        conversation = ttk.Labelframe(consumption, text="Comportamento das conversas", padding=12)
+        conversation.pack(fill="x")
+        ttk.Label(
+            conversation, text="Confirmações podem se repetir em etapas diferentes. O limite de mensagens é definido em cada teste ou fila.",
+            style="Subtitle.TLabel", wraplength=530,
+        ).pack(anchor="w")
 
-        results = ttk.Labelframe(options, text="Pasta de resultados", padding=8)
+        results = ttk.Labelframe(storage, text="Pasta de relatórios JSON", padding=12)
         results.pack(fill="x", pady=(0, 10))
         self.results_folder = tk.StringVar(value=str(self.preferences.results_folder))
-        ttk.Entry(results, textvariable=self.results_folder, state="readonly").pack(
-            side="left", fill="x", expand=True,
-        )
-        ttk.Button(results, text="Escolher pasta…", command=self.choose_results_folder).pack(
-            side="right", padx=(8, 0),
-        )
+        ttk.Entry(results, textvariable=self.results_folder, state="readonly").pack(side="left", fill="x", expand=True)
+        ttk.Button(results, text="Escolher pasta...", command=self.choose_results_folder).pack(side="left", padx=(8, 0))
+        ttk.Label(storage, text="As execuções também são armazenadas no SQLite local. "
+                               "A interface usa o fuso do sistema e os relatórios registram horários em UTC.",
+                  style="Subtitle.TLabel", wraplength=540).pack(anchor="w")
         self.dark_mode = tk.BooleanVar(value=self.preferences.dark_mode)
-        ttk.Checkbutton(options, text="Modo escuro", variable=self.dark_mode,
-                        command=self.change_theme).pack(anchor="w", pady=(0, 10))
-
-        management = ttk.Frame(tab)
-        management.grid(row=0, column=1, sticky="new")
-        providers = ttk.Labelframe(management, text="Provedores de IA", padding=8)
-        providers.pack(fill="x", pady=(0, 10))
-        ttk.Button(providers, text="Gerenciar provedores…", command=self.open_provider_manager).pack(anchor="w")
-        keys_tab = ttk.Labelframe(management, text="Chaves de API existentes", padding=8)
-        keys_tab.pack(fill="x")
-        if self.credentials:
-            self.keys_tab = KeysTab(keys_tab, self.credentials, self.refresh_test_keys)
-        else:
-            ttk.Label(keys_tab, text="Abra o ChatProbe no Windows para gerenciar suas chaves.").pack(
-                anchor="w"
-            )
+        ttk.Checkbutton(appearance, text="Usar tema escuro", variable=self.dark_mode,
+                        command=self.change_theme).pack(anchor="w")
 
     def save_chat_url(self, event=None):
         try:
@@ -404,7 +433,9 @@ class ChatProbeWindow:
             self.dark_mode.set(self.preferences.dark_mode)
 
     def apply_theme(self):
-        palette = self.theme.apply(self.preferences.dark_mode, self.scenario, self.night_queue.editor)
+        palette = self.theme.apply(self.preferences.dark_mode)
+        self.prompt_editor.apply_palette(palette)
+        self.night_queue.prompt_editor.apply_palette(palette)
         self.conversation.apply_palette(palette)
 
     def update_preferences(self, preferences):
@@ -424,10 +455,10 @@ class ChatProbeWindow:
         if not self.update_preferences(replace(self.preferences, mode=mode)):
             self.mode_field.set(self.mode)
             return
-        self.drafts[self.mode] = self.scenario.get("1.0", "end-1c")
+        self.drafts[self.mode] = self.prompt_editor.value()
+        self.prompt_titles[self.mode] = self.prompt_editor.title_var.get()
         self.mode = mode
-        self.scenario.delete("1.0", "end")
-        self.scenario.insert("1.0", self.drafts[self.mode])
+        self.prompt_editor.set_value(self.drafts[self.mode], self.prompt_titles.get(self.mode, ""))
         self.show_mode_fields()
 
     def save_customer_name(self, event=None):
@@ -446,12 +477,12 @@ class ChatProbeWindow:
         return False
 
     def update_profile_summary(self):
-        model = self.ollama_model.get() if self.mode == OLLAMA_MODE else ""
+        model = self.ollama_model.get() if self.mode == OLLAMA_MODE else groq_api.MODEL if self.mode == GROQ_MODE else ""
         default = self.catalog.profiles.get(self.catalog.default) if self.catalog else None
         if self.mode == AI_MODE and default:
-            self.profile_summary.set(f"Padrão · {default.name}")
+            self.profile_summary.set(f"Padrão · {default.name} / {default.model or 'sem modelo'}")
         else:
-            self.profile_summary.set(f"Ollama · {model}" if model else self.mode)
+            self.profile_summary.set(f"{self.mode} · {model}" if model else self.mode)
 
     def show_mode_fields(self):
         for widget in (self.groq_key_label, self.groq_key, self.groq_notice,
@@ -460,12 +491,17 @@ class ChatProbeWindow:
             widget.grid_remove()
         for field in self.provider_fields:
             if self.mode == AI_MODE:
-                field.pack(side="left", fill="x", expand=True, padx=(8, 0))
+                if field is self.night_provider:
+                    field.pack(side="left", fill="x", expand=True)
+                else:
+                    field.pack(fill="x", pady=(4, 0))
             else:
                 field.pack_forget()
         input_label = JSON_MODE if self.mode == JSON_MODE else "Prompt inicial"
         self.editor.configure(text=input_label)
         self.night_queue.form.configure(text=input_label)
+        self.prompt_editor.set_ai_mode(self.mode != JSON_MODE)
+        self.night_queue.prompt_editor.set_ai_mode(self.mode != JSON_MODE)
         if self.mode != JSON_MODE:
             self.message_limit_label.grid(row=3, column=0, padx=(0, 10), pady=(5, 0), sticky="w")
             self.message_limit_field.grid(row=3, column=1, pady=(5, 0), sticky="w")
@@ -487,25 +523,37 @@ class ChatProbeWindow:
         self.update_profile_summary()
 
     def refresh_ollama_models(self):
-        try:
-            models = ollama_api.list_models()
-        except ollama_api.OllamaError as error:
-            self.ollama_model.configure(values=())
-            self.ollama_message.set(str(error))
-            return False
-        selected = self.ollama_model.get()
-        self.ollama_model.configure(values=models)
-        if not models:
-            self.ollama_message.set("Nenhum modelo local disponível. Instale um com ollama pull qwen3:4b.")
-            return False
-        if selected and selected not in models:
-            self.ollama_message.set("O modelo salvo não está instalado. Selecione um dos modelos disponíveis.")
-            return False
-        if not selected:
-            self.ollama_model.set(models[0])
-        self.ollama_message.set("Geração local, sem chave de API.")
-        self.update_profile_summary()
-        return True
+        if self.ollama_refresh is not None:
+            return
+        result = Queue()
+        self.ollama_refresh = result
+        self.ollama_message.set("Consultando modelos instalados...")
+
+        def worker():
+            try:
+                result.put((ollama_api.list_models(), ""))
+            except ollama_api.OllamaError as error:
+                result.put(([], str(error)))
+
+        def finish():
+            try:
+                models, error = result.get_nowait()
+            except Empty:
+                self.root.after(80, finish)
+                return
+            self.ollama_refresh = None
+            self.ollama_model.configure(values=models)
+            selected = self.ollama_model.get()
+            if models and not selected:
+                self.ollama_model.set(models[0])
+            if not error and selected and selected not in models:
+                error = "O modelo salvo não está instalado. Selecione um dos modelos disponíveis."
+            self.ollama_message.set(error or ("Geração local, sem chave de API." if models else
+                                    "Nenhum modelo local está disponível."))
+            self.update_profile_summary()
+
+        Thread(target=worker, daemon=True).start()
+        self.root.after(80, finish)
 
     def refresh_test_keys(self):
         if self.mode != GROQ_MODE:
@@ -544,7 +592,7 @@ class ChatProbeWindow:
             return
 
         test_inputs = []
-        texts = prompts if nightly else (self.scenario.get("1.0", "end-1c").strip(),)
+        texts = prompts if nightly else (self.prompt_editor.value(),)
         for number, text in enumerate(texts, 1):
             if self.mode == JSON_MODE:
                 try:
@@ -553,7 +601,7 @@ class ChatProbeWindow:
                     label = f"Roteiro {number}" if nightly else "Roteiro"
                     self.status.set(f"{label} inválido. {error}")
                     return
-            elif not text:
+            elif not text.strip():
                 self.status.set("Descreva o objetivo do teste.")
                 return
             else:
@@ -573,6 +621,8 @@ class ChatProbeWindow:
         snapshot = {"url": self.preferences.chat_url, "mode": self.mode, "parallel": parallel,
                     "product": product, "customer_name": customer_name,
                     "execution": asdict(self.execution_options),
+                    "prompt_titles": self.night_queue.titles if nightly else (),
+                    "prompt_title": "" if nightly else self.prompt_editor.title_var.get().strip(),
                     "max_customer_messages": options["max_customer_messages"],
                     "ollama_model": options.get("ollama_model"),
                     "provider": asdict(options["ai_provider"].profile) if "ai_provider" in options else None}
@@ -586,6 +636,7 @@ class ChatProbeWindow:
                 self.status.set("Falha ao registrar a fila no SQLite.")
                 return
             if scheduled is not None:
+                self.indicators.set_state("Aguardando horário", "warning")
                 self.status.set("Fila agendada. Mantenha o aplicativo aberto e o computador ligado.")
             else:
                 self.launch_saved_queue(identifier, options)
@@ -598,6 +649,7 @@ class ChatProbeWindow:
             replace(self.preferences, execution=asdict(dialog.result))
         ):
             self.execution_options = dialog.result
+            self.update_execution_summary()
 
     def schedule_queue(self):
         if self.running:
@@ -645,7 +697,12 @@ class ChatProbeWindow:
             identifier = identifiers[index]
             try:
                 if cancel:
+                    if not messagebox.askyesno("Cancelar agendamento", "Cancelar a execução agendada?",
+                                               parent=dialog):
+                        return
                     if self.queue_store.cancel(identifier):
+                        if not self.running:
+                            self.indicators.set_state("Pronto")
                         self.status.set("Agendamento cancelado.")
                 else:
                     self.launch_saved_queue(identifier)
@@ -660,7 +717,8 @@ class ChatProbeWindow:
         try:
             if self.queue_store and self.running and self.queue_id:
                 self.queue_store.heartbeat(self.queue_id, self.queue_owner)
-            elif self.queue_store and not self.running:
+            elif (self.queue_store and not self.running and not self.prompt_editor.expanded
+                  and not self.night_queue.prompt_editor.expanded):
                 self.queue_store.recover_stale()
                 for identifier, status, scheduled in self.queue_store.available():
                     if status == "scheduled" and self.app_started <= scheduled <= time():
@@ -718,6 +776,8 @@ class ChatProbeWindow:
         self.quota_scope = None
         self.active_prompts = [prompt for _, prompt, _, _ in items] if queue_id else None
         self.execution_mode = snapshot["mode"]
+        self.active_prompt_titles = snapshot.get("prompt_titles", ())
+        self.active_prompt_title = snapshot.get("prompt_title", "")
         self.report = None
         self.saved_report_path = None
         self.results = {number: result for number, _, _, result in items if result is not None}
@@ -731,12 +791,13 @@ class ChatProbeWindow:
         self.result_field.configure(state="disabled", values=())
         self.result_field.set("")
         self.set_running(True)
-        for widget in (self.save_button, self.open_folder_button, self.night_view_button, self.copy_button):
+        for widget in (self.save_button, self.open_folder_button, self.night_view_button, self.copy_button, self.expand_conversation):
             widget.state(["disabled"])
         self.result_status.set("")
         self.conversation.show()
         self.warning.set("")
-        self.warning_label.pack_forget()
+        self.indicators.set_state("Em execução", "active")
+        self.indicators.set_progress(len(self.results), self.total)
         if self.results:
             choices = [f"Teste {number}" for number in sorted(self.results)]
             self.result_field.configure(state="readonly", values=choices)
@@ -780,7 +841,7 @@ class ChatProbeWindow:
         elif self.mode == GROQ_MODE:
             key_name = self.groq_key.get()
             if not key_name:
-                raise ValueError("Salve uma chave em Configurações → Chaves de API e selecione-a para o teste.")
+                raise ValueError("Salve uma chave em Configurações → Provedores de IA e selecione-a para o teste.")
             try:
                 key = self.credentials.get("groq", key_name)
             except (OSError, UnicodeError):
@@ -791,11 +852,11 @@ class ChatProbeWindow:
             groq_api.validate_key_format(key)
             options["key"] = key
         elif self.mode == OLLAMA_MODE:
-            if not self.refresh_ollama_models():
-                raise ValueError(self.ollama_message.get())
             ollama_model = self.ollama_model.get()
-            if not ollama_model:
-                raise ValueError("Selecione um modelo instalado no Ollama em Configurações.")
+            available = self.ollama_model.cget("values")
+            if not ollama_model or (available and ollama_model not in available):
+                self.refresh_ollama_models()
+                raise ValueError("Selecione um modelo instalado em Configurações → Provedores de IA.")
             if not self.save_ollama_model():
                 raise ValueError("Não foi possível salvar o modelo selecionado.")
             options["ollama_model"] = ollama_model
@@ -809,6 +870,8 @@ class ChatProbeWindow:
                        self.night_parallel, self.night_limit, *self.provider_fields):
             widget.state(["disabled" if running else "!disabled"])
         self.night_queue.set_running(running)
+        self.prompt_editor.set_enabled(not running)
+        self.schedule_button.state(["disabled" if running else "!disabled"])
         self.run_status.set("")
         self.update_run_buttons()
 
@@ -826,15 +889,18 @@ class ChatProbeWindow:
             return
         if self.run_control.ready.is_set():
             self.run_control.pause()
+            self.indicators.set_state("Pausado", "warning")
             self.run_status.set("Fila pausada. As operações em andamento terminam antes da próxima etapa.")
         else:
             self.run_control.resume()
+            self.indicators.set_state("Em execução", "active")
             self.run_status.set("")
         self.update_run_buttons()
 
     def stop_batch(self):
         if self.running and not self.run_control.stopped.is_set():
             self.run_control.stop()
+            self.indicators.set_state("Interrompendo", "warning")
             self.run_status.set("Encerrando o lote após as operações em andamento.")
             self.update_run_buttons()
 
@@ -845,25 +911,31 @@ class ChatProbeWindow:
                 if kind == "progress":
                     number, message = value
                     self.status.set(f"Teste {number}/{self.total} — {message}")
+                    if self.run_control.ready.is_set() and not self.run_control.stopped.is_set():
+                        if message.startswith(("Intervalo", "Aguardando disponibilidade", "Aguardando nova")):
+                            self.indicators.set_state("Aguardando", "warning")
+                        else:
+                            self.indicators.set_state("Em execução", "active")
                 elif kind == "active":
                     self.active_positions.add(value)
+                    if self.run_control.ready.is_set() and not self.run_control.stopped.is_set():
+                        self.indicators.set_state("Em execução", "active")
                 elif kind == "queue_wait":
-                    self.status.set(f"Intervalo entre testes · {value} s")
+                    if self.run_control.ready.is_set() and not self.run_control.stopped.is_set():
+                        self.status.set(f"Intervalo entre testes · {value} s")
+                        self.indicators.set_state("Aguardando intervalo", "warning")
                 elif kind == "quota_scope":
                     self.quota_scope, self.quota_metadata = value
                 elif kind == "limit":
                     if value not in self.warning.get():
                         previous = self.warning.get()
                         self.warning.set(f"{previous} {value} Nenhum novo teste será iniciado neste lote.".strip())
-                        self.warning_label.pack(anchor="w")
                 elif kind == "storage_error":
                     previous = self.warning.get()
                     if value not in previous:
                         self.warning.set(f"{previous} {value}".strip())
-                        self.warning_label.pack(anchor="w")
                 elif kind == "batch_error":
                     self.warning.set(f"Não foi possível continuar o lote. {value}")
-                    self.warning_label.pack(anchor="w")
                 elif kind == "result":
                     self.add_result(value)
                 elif kind == "finished":
@@ -897,6 +969,7 @@ class ChatProbeWindow:
             except sqlite3.Error:
                 pass
         self.metrics.set(text)
+        self.indicators.set_progress(ended, self.total)
 
     def add_result(self, result):
         self.active_positions.discard(result["test"])
@@ -929,9 +1002,11 @@ class ChatProbeWindow:
         else:
             report = {"total": self.total, "parallel": self.parallel,
                       "not_started" if finished else "pending": pending,
-                      "tests": results, **self.batch_timing.fields(finished=finished)}
+                      "tests": results, "application_version": VERSION, **self.batch_timing.fields(finished=finished)}
             if self.active_prompts is not None:
                 report.update(prompts=self.active_prompts, finished=finished, queue_id=self.queue_id)
+                if any(self.active_prompt_titles):
+                    report["prompt_titles"] = self.active_prompt_titles
                 usage = {}
                 for test in results:
                     for metric, amount in test.get("token_usage", {}).items():
@@ -942,6 +1017,9 @@ class ChatProbeWindow:
                 report["stopped_by_user"] = True
             if warning:
                 report["warning"] = warning
+        if self.active_prompt_title:
+            metadata = report[0]["test_metadata"] if isinstance(report, list) else report
+            metadata["prompt_title"] = self.active_prompt_title
         return json.dumps(report, ensure_ascii=False, indent=2) + "\n"
 
     def write_report(self, content):
@@ -957,6 +1035,14 @@ class ChatProbeWindow:
         self.refresh_metrics()
         completed = sum(result["termination_reason"] == "completed" for result in self.results.values())
         pending = self.total - len(self.results) - self.previously_ended
+        if self.run_control.stopped.is_set() or any(
+            result["status"] in {"stopped", "interrupted"} for result in self.results.values()
+        ):
+            self.indicators.set_state("Interrompido", "warning")
+        elif self.warning.get() or any(result["status"] in {"error", "rate_limited"} for result in self.results.values()):
+            self.indicators.set_state("Encerrado com ocorrências", "error")
+        else:
+            self.indicators.set_state("Encerrado", "success")
         self.report = self.report_content(finished=True)
         self.save_button.state(["!disabled"])
 
@@ -992,7 +1078,9 @@ class ChatProbeWindow:
             status = TERMINATION_LABELS["message_limit"]
         self.result_status.set(status)
         self.conversation.show(result["turns"], execution_summary(result))
-        self.copy_button.configure(state="normal" if result["turns"] or result["detail"] else "disabled")
+        available = bool(result["turns"] or result["detail"])
+        for button in (self.copy_button, self.expand_conversation):
+            button.state(["!disabled" if available else "disabled"])
 
     def save(self):
         path = filedialog.asksaveasfilename(

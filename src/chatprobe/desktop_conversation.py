@@ -1,142 +1,137 @@
-"""Painel rolável da conversa registrada em um teste."""
+"""Transcrição selecionável em balões, com visualização ampliada."""
 
 import tkinter as tk
-from tkinter import ttk
-from tkinter.font import Font
+from tkinter import font, ttk
 
 from src.chatprobe.browser.timing import local_time
 
 
-SPEAKERS = {"user": "Usuário", "bot": "Bot", "detail": "Encerramento"}
+SPEAKERS = {"user": "Cliente", "bot": "Chatbot", "detail": "Encerramento"}
 
 
 class ConversationView(ttk.Frame):
-    def __init__(self, parent):
+    def __init__(self, parent, *, expandable=True):
         super().__init__(parent)
         self.messages = []
         self.palette = None
-        self.message_font = Font(self, family="Segoe UI", size=10)
-        self.speaker_font = Font(self, family="Segoe UI", size=9, weight="bold")
-
-        self.canvas = tk.Canvas(self, width=320, height=140, highlightthickness=1,
-                                takefocus=True, yscrollincrement=18)
-        scroll = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=scroll.set)
+        self.expanded = None
+        self.allow_expand = expandable
+        self.text = tk.Text(self, width=24, height=6, wrap="word", padx=12, pady=10,
+                            state="disabled", relief="flat", font="TkDefaultFont")
+        scroll = ttk.Scrollbar(self, orient="vertical", command=self.text.yview)
         scroll.pack(side="right", fill="y")
-        self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", self.layout_messages)
-        self.canvas.bind("<MouseWheel>", self.scroll_wheel)
-        self.canvas.bind("<Button-1>", lambda event: self.canvas.focus_set())
-        self.canvas.bind("<Button-3>", self.open_copy_menu)
-        self.canvas.bind("<Control-c>", lambda event: self.copy())
-        for key, amount, unit in (
-            ("Up", -1, "units"), ("Down", 1, "units"),
-            ("Prior", -1, "pages"), ("Next", 1, "pages"),
-            ("Button-4", -3, "units"), ("Button-5", 3, "units"),
-        ):
-            self.canvas.bind(f"<{key}>", lambda event, n=amount, u=unit: self.canvas.yview_scroll(n, u))
-        self.canvas.bind("<Home>", lambda event: self.canvas.yview_moveto(0))
-        self.canvas.bind("<End>", lambda event: self.canvas.yview_moveto(1))
+        self.text.pack(fill="both", expand=True)
+        self.text.configure(yscrollcommand=scroll.set)
+        self.text.bind("<Control-a>", self.select_all)
+        self.text.bind("<Configure>", self.resize)
+        self.text.bind("<Button-3>", self.open_copy_menu)
         self.copy_menu = tk.Menu(self, tearoff=False)
+        self.copy_menu.add_command(label="Copiar seleção", command=lambda: self.text.event_generate("<<Copy>>"))
+        self.copy_menu.add_command(label="Copiar conversa completa", command=self.copy)
+
+    def resize(self, event):
+        offset = max(10, event.width // 8)
+        self.text.tag_configure("user", lmargin1=offset, lmargin2=offset, rmargin=10)
+        self.text.tag_configure("bot", lmargin1=10, lmargin2=10, rmargin=offset)
+        self.text.tag_configure("detail", lmargin1=10, lmargin2=10, rmargin=10)
 
     def apply_palette(self, palette):
         self.palette = palette
-        self.canvas.configure(
-            background=palette["canvas"], highlightbackground=palette["border"],
-            highlightcolor=palette["accent"],
-        )
-        self.copy_menu.configure(
-            background=palette["surface"], foreground=palette["text"],
-            activebackground=palette["selected"], activeforeground=palette["text"],
-        )
-        self.layout_messages()
+        self.text.configure(background=palette["field"], foreground=palette["text"],
+                            highlightbackground=palette["border"], highlightcolor=palette["accent"],
+                            highlightthickness=1, selectbackground=palette["selection_text"],
+                            selectforeground="#ffffff")
+        self.copy_menu.configure(background=palette["surface"], foreground=palette["text"],
+                                 activebackground=palette["selected"], activeforeground=palette["text"])
+        self.text.tag_configure("separator", spacing3=9)
+        for role in SPEAKERS:
+            background = palette.get(f"{role}_message", palette["surface"])
+            foreground = palette.get(f"{role}_speaker", palette["muted"])
+            self.text.tag_configure(role, background=background, spacing2=2, spacing3=3)
+            if "lmargincolor" in self.text.tag_configure(role):
+                self.text.tag_configure(role, lmargincolor=palette["field"], rmargincolor=palette["field"])
+            self.text.tag_configure(f"{role}_speaker", foreground=foreground,
+                                    font=(font.nametofont("TkDefaultFont", root=self).actual("family"), 9, "bold"), spacing1=4)
+        self.text.tag_raise("sel")
+        if self.expanded is not None:
+            self.expanded.apply_palette(palette)
 
     def show(self, turns=(), detail=""):
-        self.messages = []
+        messages = []
         for turn in turns:
-            self.messages.append(("user", turn["message"], local_time(turn.get("sent_at"))))
+            messages.append(("user", turn["message"], local_time(turn.get("sent_at"))))
             timestamps = turn.get("reply_received_at", [])
             for index, reply in enumerate(turn["replies"]):
                 if reply:
                     received = timestamps[index] if index < len(timestamps) else None
-                    self.messages.append(("bot", reply, local_time(received)))
+                    messages.append(("bot", reply, local_time(received)))
         if detail:
-            self.messages.append(("detail", detail, ""))
-        self.canvas.yview_moveto(0)
-        self.layout_messages()
+            messages.append(("detail", detail, ""))
+        self.set_messages(messages)
 
-    def layout_messages(self, event=None):
-        if not self.palette:
-            return
-        width = self.canvas.winfo_width()
-        if width <= 1:
-            return
-        position = self.canvas.yview()[0]
-        self.canvas.delete("all")
-        y = 14
-        for index, (role, text, timestamp) in enumerate(self.messages):
-            y = self.draw_bubble(index, role, text, timestamp, width, y)
-        self.canvas.configure(scrollregion=(0, 0, width, max(y, self.canvas.winfo_height())))
-        self.canvas.yview_moveto(position)
+    def set_messages(self, messages):
+        self.messages = messages
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        for role, message, timestamp in messages:
+            heading = f"{SPEAKERS[role]} · {timestamp}" if timestamp else SPEAKERS[role]
+            self.text.insert("end", heading + "\n", (role, f"{role}_speaker"))
+            self.text.insert("end", message + "\n", (role,))
+            self.text.insert("end", "\n", ("separator",))
+        self.text.configure(state="disabled")
+        self.text.yview_moveto(0)
+        if self.expanded is not None:
+            self.expanded.set_messages(messages)
 
-    def draw_bubble(self, index, role, text, timestamp, width, top):
-        gutter = 14
-        padding = 12
-        speaker = f"{SPEAKERS[role]} · {timestamp}" if timestamp else SPEAKERS[role]
-        content_width = max(self.message_font.measure(line) for line in text.split("\n"))
-        desired_width = max(content_width, self.speaker_font.measure(speaker)) + 2 * padding
-        max_width = max(1, min(width - 2 * gutter, int(width * 0.79)))
-        bubble_width = min(desired_width, max_width)
-        left = width - gutter - bubble_width if role == "user" else gutter
-        if role == "detail":
-            left = (width - bubble_width) // 2
-            background, label_color = self.palette["surface"], self.palette["muted"]
-        else:
-            background, label_color = self.palette[f"{role}_message"], self.palette[f"{role}_speaker"]
-        tags = (role, f"message:{index}")
-        header = self.canvas.create_text(
-            left + padding, top + 8, anchor="nw", text=speaker,
-            font=self.speaker_font, fill=label_color, tags=tags,
-        )
-        body = self.canvas.create_text(
-            left + padding, self.canvas.bbox(header)[3] + 4, anchor="nw", text=text,
-            width=max(1, bubble_width - 2 * padding), font=self.message_font,
-            fill=self.palette["text"], tags=tags,
-        )
-        bottom = self.canvas.bbox(body)[3] + 10
-        right = left + bubble_width
-        radius = min(10, bubble_width // 2)
-        bubble = self.canvas.create_polygon(
-            left + radius, top, right - radius, top, right, top, right, top + radius,
-            right, bottom - radius, right, bottom, right - radius, bottom,
-            left + radius, bottom, left, bottom, left, bottom - radius,
-            left, top + radius, left, top,
-            smooth=True, splinesteps=12, fill=background, tags=(*tags, "bubble"),
-        )
-        self.canvas.tag_lower(bubble, header)
-        return bottom + 10
+    def select_all(self, event=None):
+        self.text.tag_add("sel", "1.0", "end-1c")
+        return "break"
 
-    def copy(self, index=None):
+    def copy(self):
         if not self.messages:
             return
-        text = (self.messages[index][1] if index is not None else
-                "\n\n".join(f"{SPEAKERS[role]}\n{message}" for role, message, _ in self.messages))
+        text = "\n\n".join(
+            f"{SPEAKERS[role]}" + (f" · {timestamp}" if timestamp else "") + f"\n{message}"
+            for role, message, timestamp in self.messages
+        )
         self.clipboard_clear()
         self.clipboard_append(text)
 
     def open_copy_menu(self, event):
-        for tag in self.canvas.gettags("current"):
-            if tag.startswith("message:"):
-                index = int(tag.split(":")[1])
-                self.copy_menu.delete(0, "end")
-                self.copy_menu.add_command(label="Copiar mensagem", command=lambda: self.copy(index))
-                try:
-                    self.copy_menu.tk_popup(event.x_root, event.y_root)
-                finally:
-                    self.copy_menu.grab_release()
-                break
+        self.copy_menu.entryconfigure(0, state="normal" if self.text.tag_ranges("sel") else "disabled")
+        self.copy_menu.entryconfigure(1, state="normal" if self.messages else "disabled")
+        try:
+            self.copy_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.copy_menu.grab_release()
 
-    def scroll_wheel(self, event):
-        direction = -1 if event.delta > 0 else 1
-        self.canvas.yview_scroll(direction * max(1, abs(event.delta) // 120), "units")
-        return "break"
+    def expand(self):
+        if self.expanded is not None:
+            self.expanded.winfo_toplevel().lift()
+            return
+        if not self.allow_expand:
+            return
+        parent = self.winfo_toplevel()
+        popup = tk.Toplevel(parent)
+        popup.title("Conversa")
+        popup.transient(parent)
+        popup.geometry(f"{min(1000, parent.winfo_screenwidth() - 100)}x"
+                       f"{min(740, parent.winfo_screenheight() - 120)}+38+38")
+        self.expanded = ConversationView(popup, expandable=False)
+        self.expanded.pack(fill="both", expand=True, padx=14, pady=14)
+        if self.palette:
+            self.expanded.apply_palette(self.palette)
+            popup.configure(background=self.palette["canvas"])
+        self.expanded.set_messages(self.messages)
+
+        def close(event=None):
+            self.expanded = None
+            popup.destroy()
+
+        actions = ttk.Frame(popup)
+        actions.pack(fill="x", padx=14, pady=(0, 12))
+        ttk.Button(actions, text="Copiar conversa", command=self.copy).pack(side="left")
+        ttk.Button(actions, text="Fechar", command=close).pack(side="right")
+        popup.bind("<Escape>", close)
+        popup.protocol("WM_DELETE_WINDOW", close)
+        return self.expanded

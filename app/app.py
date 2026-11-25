@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 import streamlit as st
 
 from src.chatprobe.browser.timing import local_time
+from src.chatprobe.browser.version import VERSION
 from src.chatprobe.desktop_preferences import load_preferences
 from src.chatprobe.runner.reports import execution_summary
 
@@ -44,7 +45,7 @@ def run_scenario(scenario_text):
 
 st.set_page_config(page_title="ChatProbe", page_icon="💬")
 st.title("ChatProbe")
-st.caption("Testes do AutoSystem em homologação")
+st.caption(f"v{VERSION} · Testes do AutoSystem em homologação")
 
 with st.form("scenario"):
     scenario_text = st.text_area(

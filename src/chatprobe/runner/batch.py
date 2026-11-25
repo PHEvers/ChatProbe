@@ -13,6 +13,7 @@ from src.chatprobe.providers import ProviderError, legacy_metadata, legacy_provi
 from src.chatprobe.browser import smoke
 from src.chatprobe.browser.replies import message_text_key
 from src.chatprobe.browser.timing import ExecutionTiming
+from src.chatprobe.browser.version import VERSION
 from src.chatprobe.storage.sqlite_store import RunStore
 from src.chatprobe.runner.consumption import ConsumptionLedger, ExecutionOptions, LocalQuotaError, generate_with_controls, quota_scopes
 from src.chatprobe.storage.queues import QueueStore
@@ -301,7 +302,7 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
         else:
             status, reason, detail = "error", "technical_error", str(error)
 
-    result = {"test": number, "status": status, "termination_reason": reason, "turns": turns,
+    result = {"test": number, "application_version": VERSION, "status": status, "termination_reason": reason, "turns": turns,
               "detail": detail, **timing.fields()}
     if waits:
         result["wait_seconds"] = {label: round(seconds, 3) for label, seconds in waits.items()}
