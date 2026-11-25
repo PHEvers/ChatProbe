@@ -99,7 +99,7 @@ class LibraryView(ttk.Frame):
             self.tree.delete(*self.tree.get_children())
             for key, (_, _, prompt, version) in self.rows.items():
                 self.tree.insert("", "end", iid=key, text=f"{'★ ' if prompt.favorite else ''}{prompt.title} · v{version}")
-            self.tree.selection_set(self.selected.intersection(self.rows))
+            self.tree.selection_set(tuple(self.selected.intersection(self.rows)))
             self.after_idle(lambda: setattr(self, "refreshing", False))
         self.report(read)
 
