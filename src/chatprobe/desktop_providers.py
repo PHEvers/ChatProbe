@@ -7,18 +7,21 @@ from threading import Thread
 from tkinter import messagebox, ttk
 from uuid import uuid4
 
+from src.chatprobe.runner.consumption import ConsumptionLedger, ExecutionOptions, LocalQuotaError, quota_scopes
+from src.chatprobe.storage.sqlite_store import RunStore
 from src.chatprobe.provider_catalog import LEGACY_GROQ
 from src.chatprobe.providers import PRESETS, ProviderError, ProviderProfile
 
 
 class ProviderManager(tk.Toplevel):
-    def __init__(self, parent, catalog, changed):
+    def __init__(self, parent, catalog, changed, database_path=None):
         super().__init__(parent)
         self.title("Provedores de IA")
         self.transient(parent)
         self.columnconfigure(1, weight=1)
         self.catalog = catalog
         self.changed = changed
+        self.database_path = database_path
         self.current = None
         self.kind = "openai"
         self.results = Queue()
@@ -37,6 +40,9 @@ class ProviderManager(tk.Toplevel):
             ("name", "Nome"), ("base_url", "URL base"), ("model", "Modelo"),
             ("temperature", "Temperatura opcional"), ("timeout", "Timeout em segundos"),
             ("key", "Nova chave de API"),
+            ("quota", "Cota global (RPM RPD TPM TPD)"),
+            ("model_quota", "Cota do modelo (RPM RPD TPM TPD)"),
+            ("quota_scope", "Grupo de cota compartilhada"),
         ), 2):
             ttk.Label(self, text=label).grid(row=row, column=0, sticky="w", padx=8, pady=2)
             if key == "model":
@@ -45,17 +51,17 @@ class ProviderManager(tk.Toplevel):
                 widget = ttk.Entry(self, show="*" if key == "key" else "")
             widget.grid(row=row, column=1, sticky="ew", padx=8, pady=2)
             self.fields[key] = widget
-        self.buttons(8, (("Novo", self.new), ("Salvar", self.save), ("Duplicar", self.duplicate),
+        self.buttons(11, (("Novo", self.new), ("Salvar", self.save), ("Duplicar", self.duplicate),
                          ("Excluir", self.remove), ("Definir padrão", self.default)))
-        self.buttons(9, (("Salvar chave", self.save_key), ("Remover chave", self.remove_key),
+        self.buttons(12, (("Salvar chave", self.save_key), ("Remover chave", self.remove_key),
                          ("Reutilizar chave Groq", self.reuse_groq_key)))
-        self.buttons(10, (("Atualizar modelos", lambda: self.probe("models")),
+        self.buttons(13, (("Atualizar modelos", lambda: self.probe("models")),
                           ("Testar conexão", lambda: self.probe("connection")),
                           ("Testar geração (pode consumir créditos)", lambda: self.probe("generation"))),
                      connection=True)
         self.status = tk.StringVar()
         ttk.Label(self, textvariable=self.status, wraplength=580).grid(
-            row=11, column=0, columnspan=2, sticky="w", padx=8, pady=8)
+            row=14, column=0, columnspan=2, sticky="w", padx=8, pady=8)
         self.refresh(self.catalog.default)
         self.poll_timer = self.after(100, self.poll)
 
@@ -247,16 +253,23 @@ class ProviderManager(tk.Toplevel):
             button.state(["disabled"])
         self.status.set("Consultando o provedor…")
 
+        profiles = tuple(self.catalog.profiles.values())
+
         def worker():
             try:
                 if action == "generation":
-                    value = provider.test_generation()
+                    profile = provider.profile
+                    scopes = quota_scopes(profile, profile.metadata(), "", ExecutionOptions(), profiles)
+                    if self.database_path is None:
+                        raise LocalQuotaError("O SQLite é necessário para reservar o consumo deste teste.")
+                    ledger = ConsumptionLedger(RunStore(self.database_path))
+                    value = provider.test_generation(ledger=ledger, scopes=scopes)
                 elif action == "models":
                     value = provider.list_models()
                 else:
                     value = provider.check_connection()
                 self.results.put((provider.profile, action, value, ""))
-            except ProviderError as error:
+            except (ProviderError, LocalQuotaError) as error:
                 self.results.put((provider.profile, action, None, str(error)))
             except Exception:
                 self.results.put((provider.profile, action, None, "Falha inesperada ao consultar o provedor."))

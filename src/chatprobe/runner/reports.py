@@ -9,6 +9,7 @@ TERMINATION_LABELS = {
     "message_limit": "Limite de mensagens",
     "interrupted": "Interrupção",
     "technical_error": "Erro técnico",
+    "local_quota": "Cota local",
     "api_limit": "Limite de API",
 }
 

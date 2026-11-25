@@ -24,6 +24,7 @@ class Preferences:
     customer_name: str = ""
     night_prompts: tuple[str, ...] = ()
     chat_url: str = DEFAULT_CHAT_URL
+    execution: dict = None
 
 
 def load_preferences():
@@ -43,6 +44,7 @@ def load_preferences():
         chat_url = DEFAULT_CHAT_URL
     return Preferences(
         chat_url=chat_url,
+        execution=values.get("execution") if isinstance(values.get("execution"), dict) else None,
         results_folder=Path(folder),
         dark_mode=values.get("dark_mode") is True,
         mode=preference_text(values, "mode"),

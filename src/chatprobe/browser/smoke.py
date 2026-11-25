@@ -90,7 +90,7 @@ def wait_for_triage_step(destination, other_subject, log):
 
 
 def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None, checkpoint=None,
-         on_turn=None):
+         on_turn=None, before_message=None, on_send=None, check_stop=None):
     timing = ExecutionTiming()
     interruption = ""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -261,11 +261,15 @@ def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None, 
             outgoing = {message_text_key(cnpj)}
             for number, message in enumerate(conversation, start=1):
                 checkpoint()
+                if before_message is not None:
+                    before_message()
                 outgoing.add(message_text_key(message))
                 textbox.fill(message)
                 before = capture.snapshot(outgoing)
                 sent_at = utc_now()
                 send.click()
+                if on_send is not None:
+                    on_send()
                 turn = {"message": message, "replies": [], "sent_at": sent_at, "reply_received_at": []}
                 turns.append(turn)
                 if on_turn is not None:
@@ -286,7 +290,7 @@ def main(argv=None, log=print, *, scenario=None, next_message=None, turns=None, 
                         on_turn(number, turn)
 
                 log(f"Turno {number}: aguardando a resposta do bot...")
-                reply = capture.wait_for_reply(before, outgoing, observe=observe)
+                reply = capture.wait_for_reply(before, outgoing, observe=observe, check_stop=check_stop)
                 if reply != turn["replies"]:
                     observe(reply)
                 log(f"Turno {number}: resposta do suporte capturada.")
