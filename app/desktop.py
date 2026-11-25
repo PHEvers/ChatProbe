@@ -24,6 +24,8 @@ from src.chatprobe.desktop_conversation import ConversationView
 from src.chatprobe.desktop_keys import KeysTab
 from src.chatprobe.desktop_execution import ExecutionDialog
 from src.chatprobe.desktop_history import HistoryView
+from src.chatprobe.desktop_library import LibraryView
+from src.chatprobe.storage.library import Library
 from src.chatprobe.history_rerun import RerunDraft
 from src.chatprobe.desktop_night_queue import NightQueue
 from src.chatprobe.desktop_layout import ExecutionPanel, Navigation, ScrollPanel
@@ -84,6 +86,8 @@ class ChatProbeWindow:
         self.app_started = time()
         self.queue_id = None
         self.rerun_draft = None
+        self.library_origin = None
+        self.library_content = None
         self.rerun_check = None
         self.queue_store = None
         self.active_positions = set()
@@ -133,6 +137,7 @@ class ChatProbeWindow:
         self.tabs.pack(fill="both", expand=True)
         self.test_tab = self.tabs.add("Teste", "play")
         self.queue_tab = self.tabs.add("Fila de testes", "queue")
+        self.library_tab = self.tabs.add("Biblioteca", "library")
         self.history_tab = self.tabs.add("Histórico", "history")
         self.settings_tab = self.tabs.add("Configurações", "settings")
 
@@ -220,6 +225,9 @@ class ChatProbeWindow:
         self.history = HistoryView(self.history_tab, HistoryStore(self.queue_store.store) if self.queue_store else None,
                                    self.stage_history, self.enqueue_history, running=lambda: self.running)
         self.history.pack(fill="both", expand=True)
+        self.library = LibraryView(self.library_tab, Library(self.queue_store.store) if self.queue_store else None,
+                                   self.load_library_prompt, self.queue_library_prompts, self.library_history)
+        self.library.pack(fill="both", expand=True)
         self.tabs.on_select = lambda page: self.history.refresh() if page is self.history_tab else None
         self.build_settings(self.settings_tab)
         self.refresh_providers()
@@ -462,6 +470,7 @@ class ChatProbeWindow:
         self.night_queue.prompt_editor.apply_palette(palette)
         self.conversation.apply_palette(palette)
         self.history.apply_palette(palette)
+        self.library.editor.apply_palette(palette)
 
     def update_preferences(self, preferences):
         try:
@@ -490,6 +499,47 @@ class ChatProbeWindow:
         self.prompt_editor.set_value(self.drafts[self.mode], self.prompt_titles.get(self.mode, ""))
         self.show_mode_fields()
 
+    @staticmethod
+    def library_reference(row, run=None):
+        return {"library_prompt_id": str(row[0]), "library_collection_id": row[1],
+                "library_prompt_version": row[3], "library_collection_run_id": run, "library_expected": row[2].expected}
+
+    def load_library_prompt(self, row):
+        if self.running:
+            return
+        self.clear_rerun()
+        prompt = row[2]
+        mode = JSON_MODE if prompt.mode == "json" else AI_MODE
+        if mode != self.mode:
+            self.switch_mode(mode)
+        self.prompt_editor.set_value(prompt.content, prompt.title)
+        self.library_origin = self.library_reference(row)
+        self.library_content = prompt.content
+        if prompt.product in smoke.PRODUCT_OPTIONS:
+            self.product_field.set(prompt.product)
+        self.tabs.select(self.test_tab)
+
+    def queue_library_prompts(self, rows):
+        if not rows or self.running:
+            return
+        if any((row[2].mode == "json") != (self.mode == JSON_MODE) for row in rows):
+            self.library.status.set("Selecione o modo correspondente à fila antes de enviar.")
+            return
+        if not self.night_queue.commit_draft():
+            return
+        run = uuid4().hex
+        queue = self.night_queue
+        if queue.persist(queue.prompts + tuple(row[2].content for row in rows),
+                         queue.titles + tuple(row[2].title for row in rows),
+                         queue.origins + tuple(self.library_reference(row, run) for row in rows)):
+            self.tabs.select(self.queue_tab)
+
+    def library_history(self, identifier, *, collection=False):
+        key = "library_collection" if collection else "library_prompt"
+        self.history.filters = {key: str(identifier)}
+        self.history.page = 0
+        self.tabs.select(self.history_tab)
+
     def stage_history(self, record):
         if self.running or not record.get("prompt_text"):
             self.history.status.set("O prompt ou roteiro original deste teste não está disponível.")
@@ -506,6 +556,7 @@ class ChatProbeWindow:
             return
         if mode != self.mode:
             self.switch_mode(mode)
+        self.library_origin = None
         self.rerun_draft = RerunDraft.from_record(record, self.preferences.chat_url,
                                                  self.customer_name_field.get(), self.execution_options)
         self.rerun_check = None
@@ -800,6 +851,7 @@ class ChatProbeWindow:
                     "prompt_text": None if nightly else texts[0],
                     "prompt_origins": self.night_queue.origins if nightly else (),
                     "source_test_id": draft.source if draft else None,
+                    "library_origin": self.library_origin if not nightly and texts[0] == self.library_content else None,
                     "prompt_titles": self.night_queue.titles if nightly else (),
                     "prompt_title": "" if nightly else self.prompt_editor.title_var.get().strip(),
                     "max_customer_messages": options["max_customer_messages"],
@@ -989,10 +1041,12 @@ class ChatProbeWindow:
         origins, titles = snapshot.get("prompt_origins", ()), snapshot.get("prompt_titles", ())
         history_items = {number: {
             "prompt_text": prompt, "title": titles[number-1] if number <= len(titles) else None,
-            "source_test_id": origins[number-1] if number <= len(origins) else None,
+            **((origins[number-1] if isinstance(origins[number-1], dict) else
+                {"source_test_id": origins[number-1]}) if number <= len(origins) else {}),
         } for number, prompt, _, _ in items} if queue_id else {number: {
             "prompt_text": snapshot.get("prompt_text"), "title": snapshot.get("prompt_title"),
             "source_test_id": snapshot.get("source_test_id"),
+            **(snapshot.get("library_origin") or {}),
         } for number in range(1, total+1)}
         Thread(
             target=batch.run_batch, args=(snapshot["url"], total, self.parallel, self.events),

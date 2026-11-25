@@ -120,7 +120,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(self.query("PRAGMA user_version"), [(len(MIGRATIONS),)])
         self.assertEqual(self.query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"),
                          [(name,) for name in ("api_cooldowns", "api_requests", "api_scopes", "events",
-                                                "execution_queues", "messages", "prompts", "queue_items", "tests")])
+                                                "execution_queues", "library_collections", "messages", "prompt_revisions", "prompts", "queue_items", "tests")])
 
     def test_migrates_version_one_preserving_data(self):
         with closing(sqlite3.connect(self.path)) as connection, connection:
