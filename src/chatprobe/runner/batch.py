@@ -1,6 +1,8 @@
 """Executa lotes de sessões isoladas e preserva o resultado de cada teste."""
 
+import json
 import re
+from dataclasses import asdict
 import sqlite3
 from math import ceil
 from time import monotonic
@@ -17,6 +19,7 @@ from src.chatprobe.browser.version import VERSION
 from src.chatprobe.storage.sqlite_store import RunStore
 from src.chatprobe.runner.consumption import ConsumptionLedger, ExecutionOptions, LocalQuotaError, generate_with_controls, quota_scopes
 from src.chatprobe.storage.queues import QueueStore
+from src.chatprobe.storage.history_metadata import public_detail, public_settings, public_url
 
 
 DEFAULT_MAX_CUSTOMER_MESSAGES = 6
@@ -45,6 +48,7 @@ class BatchControl:
         self.ready.set()
         self.stopped = Event()
         self.changed = Condition()
+        self.audit_entries = []
 
     def pause(self):
         with self.changed:
@@ -61,6 +65,15 @@ class BatchControl:
             self.stopped.set()
             self.ready.set()
             self.changed.notify_all()
+
+    def audit(self, kind):
+        from src.chatprobe.browser.timing import utc_now
+        with self.changed:
+            self.audit_entries.append((kind, utc_now()))
+
+    def events_since(self, started_at):
+        with self.changed:
+            return [(kind, stamp) for kind, stamp in self.audit_entries if stamp >= started_at]
 
     def check_stop(self):
         if self.stopped.is_set():
@@ -135,7 +148,7 @@ class OpeningVariations:
 def run_test(number, url, scenario, objective, key, paused, events, *, product=smoke.DEFAULT_PRODUCT,
              customer_name=None, opening_variations=None, ollama_model=None, headless=False,
              max_customer_messages=DEFAULT_MAX_CUSTOMER_MESSAGES, control=None, store=None, batch_id=None, ai_provider=None,
-             execution=None, ledger=None, related_profiles=()):
+             execution=None, ledger=None, related_profiles=(), history_context=None):
     policy = execution or ExecutionOptions()
     timing = ExecutionTiming()
     waits = {}
@@ -152,6 +165,24 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
     generate = ai_provider.generate if ai_provider else legacy_provider(key, ollama_model) if key or ollama_model else None
     usage = {}
     test_id = None
+    mode = "ai" if ai_provider else "ollama" if ollama_model else "groq" if key else "json"
+    history_context = history_context or {}
+    prompt = history_context.get("prompt_text")
+    if prompt is None and objective:
+        prompt = objective
+    if prompt is None and scenario is not None:
+        initial, steps = scenario
+        prompt = json.dumps({"initial_message": initial, "steps": [
+            {"when_contains": condition, "message": message} for condition, message in steps
+        ]}, ensure_ascii=False)
+    history = {"title": history_context.get("title"), "prompt_text": prompt,
+               "product": product, "url": public_url(url), "application_version": VERSION,
+               "execution_type": history_context.get("execution_type", "single"),
+               "source_test_id": history_context.get("source_test_id"),
+               "settings": public_settings({"customer_name": customer_name or smoke.DEFAULT_CUSTOMER_NAME,
+                                            "headless": headless, "max_customer_messages": max_customer_messages,
+                                            "parallel": history_context.get("parallel"),
+                                            "total": history_context.get("total"), "execution": asdict(policy)})}
 
     def persist(operation, *args):
         nonlocal store
@@ -165,8 +196,7 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
             return None
 
     if store is not None:
-        mode = "ai" if ai_provider else "ollama" if ollama_model else "groq" if key else "json"
-        test_id = persist(store.start_test, batch_id or uuid4().hex, number, mode, timing.started_at, metadata)
+        test_id = persist(store.start_test, batch_id or uuid4().hex, number, mode, timing.started_at, metadata, history)
 
     def save_turn(turn_number, turn):
         if store is not None:
@@ -303,7 +333,11 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
             status, reason, detail = "error", "technical_error", str(error)
 
     result = {"test": number, "application_version": VERSION, "status": status, "termination_reason": reason, "turns": turns,
-              "detail": detail, **timing.fields()}
+              "detail": public_detail(detail, key, ai_provider.key if ai_provider else None), **timing.fields(),
+              **history, "mode": mode, "interactions": len(turns),
+              "requests": len(api_calls) if generate else 0}
+    if batch_id:
+        result["batch_id"] = batch_id
     if waits:
         result["wait_seconds"] = {label: round(seconds, 3) for label, seconds in waits.items()}
         result["processing_seconds"] = max(0, round(result["duration_seconds"] - sum(waits.values()), 3))
@@ -316,7 +350,12 @@ def run_test(number, url, scenario, objective, key, paused, events, *, product=s
     if test_id is not None:
         result["id"] = test_id
     if store is not None:
-        persist(store.finish_test, test_id, result)
+        if control is not None:
+            for kind, stamp in control.events_since(timing.started_at):
+                if store is not None:
+                    persist(store.event, test_id, kind, stamp)
+        if store is not None:
+            persist(store.finish_test, test_id, result)
     return result
 
 
@@ -324,7 +363,7 @@ def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=
               product=smoke.DEFAULT_PRODUCT, customer_name=None, ollama_model=None,
               max_customer_messages=DEFAULT_MAX_CUSTOMER_MESSAGES, test_inputs=None, headless=False,
               control=None, database_path=None, ai_provider=None, execution=None,
-              queue_id=None, queue_owner=None, positions=None, related_profiles=()):
+              queue_id=None, queue_owner=None, positions=None, related_profiles=(), history_items=None):
     paused = Event()
     policy = execution or ExecutionOptions()
     queues = None
@@ -371,12 +410,14 @@ def run_batch(url, total, parallel, events, *, scenario=None, objective="", key=
                     position = positions[number - 1] if positions is not None else number
                     if queues:
                         queues.set_item(queue_id, position, "running")
+                    context = {**((history_items or {}).get(position, {})), "parallel": parallel,
+                               "total": total, "execution_type": "queue" if queue_id else "batch" if total > 1 else "single"}
                     future = pool.submit(run_test, position, url, test_scenario, test_objective, key,
                                          paused, events, product=product, customer_name=customer_name,
                                          opening_variations=opening_variations, ollama_model=ollama_model,
                                          headless=headless, max_customer_messages=max_customer_messages,
                                          control=control, store=store, batch_id=batch_id, ai_provider=ai_provider,
-                                         execution=execution, ledger=ledger, related_profiles=related_profiles)
+                                         execution=execution, ledger=ledger, related_profiles=related_profiles, history_context=context)
                     running[future] = position
                     if execution is not None:
                         events.put(("active", position))

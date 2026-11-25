@@ -16,6 +16,8 @@ class ConversationView(ttk.Frame):
         self.palette = None
         self.expanded = None
         self.allow_expand = expandable
+        self.bubbles = []
+        self.body_font = font.nametofont("TkDefaultFont", root=self)
         self.text = tk.Text(self, width=24, height=6, wrap="word", padx=12, pady=10,
                             state="disabled", relief="flat", font="TkDefaultFont")
         scroll = ttk.Scrollbar(self, orient="vertical", command=self.text.yview)
@@ -29,11 +31,20 @@ class ConversationView(ttk.Frame):
         self.copy_menu.add_command(label="Copiar seleção", command=lambda: self.text.event_generate("<<Copy>>"))
         self.copy_menu.add_command(label="Copiar conversa completa", command=self.copy)
 
-    def resize(self, event):
-        offset = max(10, event.width // 8)
-        self.text.tag_configure("user", lmargin1=offset, lmargin2=offset, rmargin=10)
-        self.text.tag_configure("bot", lmargin1=10, lmargin2=10, rmargin=offset)
-        self.text.tag_configure("detail", lmargin1=10, lmargin2=10, rmargin=10)
+    def resize(self, event=None):
+        width = (event.width if event else self.text.winfo_width()) - 30
+        if width < 60:
+            return
+        margin = 8
+        for tag, role, desired in self.bubbles:
+            bubble_width = min(max(110, desired + 14), round(width * 0.78))
+            if role == "user":
+                left, right = width - bubble_width, margin
+            elif role == "bot":
+                left, right = margin, width - bubble_width
+            else:
+                left, right = margin, margin
+            self.text.tag_configure(tag, lmargin1=left, lmargin2=left, rmargin=right)
 
     def apply_palette(self, palette):
         self.palette = palette
@@ -51,7 +62,8 @@ class ConversationView(ttk.Frame):
             if "lmargincolor" in self.text.tag_configure(role):
                 self.text.tag_configure(role, lmargincolor=palette["field"], rmargincolor=palette["field"])
             self.text.tag_configure(f"{role}_speaker", foreground=foreground,
-                                    font=(font.nametofont("TkDefaultFont", root=self).actual("family"), 9, "bold"), spacing1=4)
+                                    font=(self.body_font.actual("family"), 9),
+                                    justify="right" if role == "user" else "left", spacing1=3)
         self.text.tag_raise("sel")
         if self.expanded is not None:
             self.expanded.apply_palette(palette)
@@ -73,11 +85,19 @@ class ConversationView(ttk.Frame):
         self.messages = messages
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
-        for role, message, timestamp in messages:
+        if self.bubbles:
+            self.text.tag_delete(*(tag for tag, _, _ in self.bubbles))
+        self.bubbles = []
+        for number, (role, message, timestamp) in enumerate(messages):
             heading = f"{SPEAKERS[role]} · {timestamp}" if timestamp else SPEAKERS[role]
-            self.text.insert("end", heading + "\n", (role, f"{role}_speaker"))
-            self.text.insert("end", message + "\n", (role,))
+            longest = max([heading, *message.split("\n")], key=len)
+            tag = f"bubble_{number}"
+            self.bubbles.append((tag, role, self.body_font.measure(longest[:150])))
+            self.text.insert("end", message + "\n", (role, tag))
+            self.text.insert("end", heading + "\n", (f"{role}_speaker", tag))
             self.text.insert("end", "\n", ("separator",))
+        self.resize()
+        self.text.tag_raise("sel")
         self.text.configure(state="disabled")
         self.text.yview_moveto(0)
         if self.expanded is not None:

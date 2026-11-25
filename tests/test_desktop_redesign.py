@@ -100,7 +100,7 @@ class TkTests(unittest.TestCase):
         queue.pack(fill="both", expand=True)
         queue.load_prompt(1)
         queue.move_prompt(-1)
-        self.assertEqual(saved[-1], (("Próximo", first), ("Breve", "Longo")))
+        self.assertEqual(saved[-1], (("Próximo", first), ("Breve", "Longo"), (None, None)))
         queue.set_running(True)
         self.assertEqual(queue.editor.cget("state"), "disabled")
         self.assertTrue(queue.down.instate(["disabled"]))

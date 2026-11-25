@@ -1,6 +1,6 @@
 # Fase 4 do ChatProbe
 
-O desktop usa Tk/ttk. O cabeçalho reúne **Teste**, **Fila de testes** e **Configurações** à esquerda, com **ChatProbe** e a versão à direita. Use `Alt+1`, `Alt+2` e `Alt+3` para alternar entre as três abas, e `Tab` para navegar pelos controles. O estado da execução aparece com texto, cor e barra de progresso.
+O desktop usa Tk/ttk. O cabeçalho reúne **Teste**, **Fila de testes** e **Configurações** à esquerda, com **ChatProbe** e a versão à direita. Use `Alt+1` e `Alt+2` para abrir Teste e Fila de testes, e `Tab` para navegar pelos controles. Na versão com [Histórico](fase-5-historico.md), `Alt+3` abre Histórico e `Alt+4` abre Configurações. O estado da execução aparece com texto, cor e barra de progresso.
 
 ## Teste e fila
 

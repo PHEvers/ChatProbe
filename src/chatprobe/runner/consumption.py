@@ -136,11 +136,11 @@ class ConsumptionLedger:
                                    ((request_id, scope) for scope, _ in scopes))
             return request_id, 0
 
-    def finish(self, request_id, usage, outcome, *, retry_after=None, cooldown=None):
+    def finish(self, request_id, usage, outcome, *, retry_after=None, cooldown=None, processing_seconds=None):
         with self.store.transaction() as connection:
             connection.execute(
-                "UPDATE api_requests SET actual=?, usage_json=?, outcome=?, retry_after=? WHERE id=?",
-                (usage.get("total_tokens"), json.dumps(usage) if usage else None, outcome, retry_after, request_id))
+                "UPDATE api_requests SET actual=?, usage_json=?, outcome=?, retry_after=?, processing_seconds=? WHERE id=?",
+                (usage.get("total_tokens"), json.dumps(usage) if usage else None, outcome, retry_after, processing_seconds, request_id))
 
             if cooldown:
                 scope, seconds = cooldown
@@ -181,10 +181,11 @@ def generate_with_controls(generate, objective, history, options, *, ledger, sco
             checkpoint()
         record = {"interaction": len(history) + 1, "attempt": attempt + 1, "estimated_tokens": estimate}
         records.append(record)
+        request_started = clock()
         try:
             decision = generate(objective, history, **options)
         except ProviderError as error:
-            record["outcome"] = error.code
+            record.update(outcome=error.code, processing_seconds=round(clock() - request_started, 3))
             retry = error.code in {"rate_limit", "connection", "timeout", "temporary"} and (
                 not error.daily or error.retry_after is not None
             )
@@ -195,17 +196,19 @@ def generate_with_controls(generate, objective, history, options, *, ledger, sco
                 record["retry_after_seconds"] = error.retry_after
             if ledger is not None:
                 ledger.finish(reservation, {}, error.code, retry_after=error.retry_after,
-                              cooldown=(cooldown_scope, delay) if error.code == "rate_limit" else None)
+                              cooldown=(cooldown_scope, delay) if error.code == "rate_limit" else None,
+                              processing_seconds=record["processing_seconds"])
             if not retry or attempt >= policy.retries or clock() - started + delay > policy.max_wait:
                 raise
             wait_for(delay, "Aguardando nova tentativa")
         except Exception:
-            record["outcome"] = "technical_error"
+            record.update(outcome="technical_error", processing_seconds=round(clock() - request_started, 3))
             if ledger is not None:
-                ledger.finish(reservation, {}, "technical_error")
+                ledger.finish(reservation, {}, "technical_error", processing_seconds=record["processing_seconds"])
             raise
         else:
-            record.update(outcome="ok", token_usage=decision.usage or None)
+            record.update(outcome="ok", token_usage=decision.usage or None,
+                          processing_seconds=round(clock() - request_started, 3))
             if ledger is not None:
-                ledger.finish(reservation, decision.usage, "ok")
+                ledger.finish(reservation, decision.usage, "ok", processing_seconds=record["processing_seconds"])
             return decision

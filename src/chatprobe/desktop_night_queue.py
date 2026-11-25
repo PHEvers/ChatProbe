@@ -11,10 +11,11 @@ def prompt_preview(prompt, title="", limit=75):
 
 
 class NightQueue(ttk.Frame):
-    def __init__(self, parent, prompts, save_prompts, set_status, *, titles=()):
+    def __init__(self, parent, prompts, save_prompts, set_status, *, titles=(), origins=()):
         super().__init__(parent)
         self.prompts = prompts
         self.titles = tuple(titles[index] if index < len(titles) else "" for index in range(len(prompts)))
+        self.origins = tuple(origins[index] if index < len(origins) else None for index in range(len(prompts)))
         self.save_prompts = save_prompts
         self.set_status = set_status
         self.editing = None
@@ -112,10 +113,10 @@ class NightQueue(ttk.Frame):
             if focus:
                 self.editor.focus_set()
 
-    def persist(self, prompts, titles):
-        if not self.save_prompts(tuple(prompts), tuple(titles)):
+    def persist(self, prompts, titles, origins):
+        if not self.save_prompts(tuple(prompts), tuple(titles), tuple(origins)):
             return False
-        self.prompts, self.titles = tuple(prompts), tuple(titles)
+        self.prompts, self.titles, self.origins = tuple(prompts), tuple(titles), tuple(origins)
         self.refresh()
         return True
 
@@ -125,14 +126,15 @@ class NightQueue(ttk.Frame):
         if not text.strip():
             self.set_status("Escreva um prompt para adicionar à fila.")
             return False
-        prompts, titles = list(self.prompts), list(self.titles)
+        prompts, titles, origins = list(self.prompts), list(self.titles), list(self.origins)
         index = self.editing
         if index is None:
             prompts.append(text)
             titles.append(title)
+            origins.append(None)
         else:
             prompts[index], titles[index] = text, title
-        if not self.persist(prompts, titles):
+        if not self.persist(prompts, titles, origins):
             return False
         self.load_prompt(index)
         self.set_status(f"{len(self.prompts)} prompt(s) na fila.")
@@ -144,7 +146,8 @@ class NightQueue(ttk.Frame):
             "Excluir prompt", "Excluir o prompt selecionado da fila?", parent=self,
         ):
             if self.persist(self.prompts[:index] + self.prompts[index + 1:],
-                            self.titles[:index] + self.titles[index + 1:]):
+                            self.titles[:index] + self.titles[index + 1:],
+                            self.origins[:index] + self.origins[index + 1:]):
                 self.load_prompt(None)
 
     def move_prompt(self, delta):
@@ -154,12 +157,24 @@ class NightQueue(ttk.Frame):
         if self.has_draft() and not self.save_prompt():
             return "break"
         other = index + delta
-        prompts, titles = list(self.prompts), list(self.titles)
+        prompts, titles, origins = list(self.prompts), list(self.titles), list(self.origins)
         prompts[index], prompts[other] = prompts[other], prompts[index]
         titles[index], titles[other] = titles[other], titles[index]
-        if self.persist(prompts, titles):
+        origins[index], origins[other] = origins[other], origins[index]
+        if self.persist(prompts, titles, origins):
             self.load_prompt(other)
         return "break"
+
+    def append_history(self, records):
+        if not self.commit_draft():
+            return False
+        first = len(self.prompts)
+        if self.persist(self.prompts + tuple(item["prompt_text"] for item in records),
+                        self.titles + tuple(item.get("title") or "" for item in records),
+                        self.origins + tuple(item["id"] for item in records)):
+            self.load_prompt(first)
+            return True
+        return False
 
     def commit_draft(self):
         return not self.has_draft() or self.save_prompt()

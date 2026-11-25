@@ -8,7 +8,7 @@ Consulte o [mapa de andamento](docs/status-do-projeto.md) para ver as validaçõ
 
 ## Interface desktop
 
-As abas **Teste**, **Fila de testes** e **Configurações** ficam à esquerda do cabeçalho. A versão aparece à direita, sob o nome ChatProbe. O [guia da interface](docs/fase-4-interface.md) reúne capturas dos temas, atalhos e a validação no Windows.
+As abas **Teste**, **Fila de testes**, **Histórico** e **Configurações** ficam à esquerda do cabeçalho. A versão aparece à direita, sob o nome ChatProbe. O [guia da interface](docs/fase-4-interface.md) reúne capturas dos temas, atalhos e a validação no Windows.
 
 ## Aplicativo para Windows
 
@@ -61,6 +61,10 @@ Clique em **Executar fila** para iniciar um teste por item, com o Chromium em se
 Nas abas de execução, **Pausar** suspende novos testes e interações em pontos seguros. **Retomar** revalida as cotas. **Parar** cancela as esperas e preserva as conversas capturadas e os itens pendentes. Use **Controle de execução** para ajustar intervalos, cotas e tentativas. A fila também pode ser agendada ou recuperada pelo SQLite. Consulte o [guia da Fase 3](docs/fase-3-execucao.md).
 
 Para rodar a janela desktop diretamente no ambiente do WSL já preparado com Playwright e Chromium, use `python -m app.desktop` na raiz do projeto.
+
+## Histórico de testes
+
+Abra **Histórico** para pesquisar, filtrar e comparar execuções do SQLite local. Selecione um resultado para ler o prompt original, conferir os eventos e ampliar a conversa. É possível preparar uma nova execução, enviar prompts à fila, importar relatórios JSON anteriores e exportar uma seleção em JSON, Markdown ou CSV. Consulte o [guia do Histórico](docs/fase-5-historico.md).
 
 ## Configurar provedores de IA
 
