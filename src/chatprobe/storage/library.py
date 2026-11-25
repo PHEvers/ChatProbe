@@ -70,17 +70,31 @@ class Library:
                            (identifier, 1 if previous is None else previous[0]+1, snapshot, stamp))
         return identifier
 
-    def prompts(self, collection=None, query="", favorite=False, mode=""):
+    def prompts(self, collection=None, query="", favorite=False, mode="", *,
+                product="", tag="", created="", updated="", order="title"):
+        sorts = {
+            "title": "p.title COLLATE NOCASE",
+            "created": "p.created_at DESC",
+            "updated": "p.updated_at DESC",
+            "last_run": "(SELECT MAX(started_at) FROM tests WHERE library_prompt_id=CAST(p.id AS TEXT)) DESC",
+            "runs": "(SELECT COUNT(*) FROM tests WHERE library_prompt_id=CAST(p.id AS TEXT)) DESC",
+        }
+        if order not in sorts:
+            raise ValueError("Ordenação inválida.")
         with self.store.transaction() as db:
             db.create_function("fold", 1, lambda x: (x or "").casefold())
-            rows = db.execute("""SELECT p.id,p.collection_id,p.title,p.mode,p.content,p.metadata,
+            rows = db.execute(f"""SELECT p.id,p.collection_id,p.title,p.mode,p.content,p.metadata,
                   COALESCE((SELECT MAX(version) FROM prompt_revisions WHERE prompt_id=p.id),1)
                   FROM prompts p LEFT JOIN library_collections c ON c.id=p.collection_id
                   WHERE (? IS NULL OR p.collection_id=?) AND (?='' OR p.mode=?)
                   AND (?=0 OR json_extract(p.metadata,'$.favorite')=1)
                   AND instr(fold(p.title || ' ' || p.content || ' ' || COALESCE(p.metadata,'') || ' ' || COALESCE(c.name,'')),?)>0
-                  ORDER BY p.title COLLATE NOCASE,p.id""",
-                              (collection, collection, mode, mode, favorite, query.casefold())).fetchall()
+                  AND (?='' OR json_extract(p.metadata,'$.product')=?)
+                  AND instr(fold(json_extract(p.metadata,'$.tags')),?)>0
+                  AND p.created_at>=? AND p.updated_at>=?
+                  ORDER BY {sorts[order]},p.id""",
+                              (collection, collection, mode, mode, favorite, query.casefold(),
+                               product, product, tag.casefold(), created, updated)).fetchall()
         return [(identifier, group, Prompt(**json.loads(data)) if data else Prompt(title, content, mode), revision)
                 for identifier, group, title, mode, content, data, revision in rows]
 
@@ -93,6 +107,21 @@ class Library:
     def delete(self, identifiers):
         with self.store.transaction() as db:
             db.executemany("DELETE FROM prompts WHERE id=?", ((identifier,) for identifier in identifiers))
+
+    def move(self, identifiers, destination):
+        with self.store.transaction() as db:
+            db.executemany("UPDATE prompts SET collection_id=?,updated_at=? WHERE id=?",
+                           ((destination, utc_now(), identifier) for identifier in identifiers))
+
+    def duplicate_collection(self, identifier):
+        rows = self.prompts(identifier)
+        source = next((row for row in self.collections() if row[0] == identifier), None)
+        if source is None:
+            raise ValueError("Coleção indisponível.")
+        target = self.collection(f"{source[1]} (cópia)", source[2])
+        for _, _, prompt, _ in rows:
+            self.save(prompt, target)
+        return target
 
     def delete_collection(self, identifier):
         with self.store.transaction() as db:

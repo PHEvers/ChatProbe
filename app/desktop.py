@@ -543,8 +543,9 @@ class ChatProbeWindow:
                          queue.origins + tuple(self.library_reference(row, run) for row in rows)):
             self.tabs.select(self.queue_tab)
 
-    def library_history(self, identifier):
-        self.history.filters = {"library_prompt": str(identifier)}
+    def library_history(self, identifier, *, collection=False):
+        key = "library_collection" if collection else "library_prompt"
+        self.history.filters = {key: str(identifier)}
         self.history.page = 0
         self.tabs.select(self.history_tab)
 
