@@ -25,7 +25,7 @@ from src.chatprobe.desktop_keys import KeysTab
 from src.chatprobe.desktop_execution import ExecutionDialog
 from src.chatprobe.desktop_history import HistoryView
 from src.chatprobe.desktop_evaluation import evaluate_automatic, evaluate_selection
-from src.chatprobe.desktop_support import SupportView, setup_assistant
+from src.chatprobe.desktop_support import SupportView, check_startup, setup_assistant
 from src.chatprobe.desktop_library import LibraryView
 from src.chatprobe.storage.library import Library
 from src.chatprobe.history_rerun import RerunDraft
@@ -1419,6 +1419,7 @@ def main():
     root = tk.Tk()
     first_use = not SETTINGS_FILE.exists()
     app = ChatProbeWindow(root)
+    check_startup(app, DEFAULT_DATABASE)
     if first_use:
         root.after_idle(lambda: setup_assistant(app))
     root.mainloop()
