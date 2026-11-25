@@ -62,6 +62,12 @@ def create_backup(database, target):
         snapshot = Path(directory) / DATABASE
         copy_database(database, snapshot)
         schema = check_database(snapshot)
+        with closing(sqlite3.connect(snapshot)) as db, db:
+            for identifier, raw in db.execute("SELECT id,snapshot FROM execution_queues").fetchall():
+                config = json.loads(raw)
+                if config.get("url"):
+                    config["url"] = public_url(config["url"])
+                    db.execute("UPDATE execution_queues SET snapshot=? WHERE id=?", (json.dumps(config), identifier))
         with ZipFile(target, "x", ZIP_DEFLATED) as archive:
             archive.writestr("manifest.json", json.dumps(
                 {"format": 1, "version": VERSION, "schema": schema, "created_at": utc_now()}))
