@@ -49,3 +49,23 @@ class EvaluationTests(unittest.TestCase):
             saved = history.for_test(test)[0]
             self.assertEqual(saved["classification"], "inconclusive")
             self.assertEqual(saved["review"]["classification"], "failed")
+
+
+    def test_automatic_local_is_idempotent_and_clears_pending_view(self):
+        from src.chatprobe.desktop_evaluation import evaluate_automatic
+        from src.chatprobe.storage.history import HistoryStore
+        with TemporaryDirectory() as directory:
+            database = RunStore(Path(directory) / "test.sqlite3")
+            identifier = database.start_test("g", 1, "json", "2026-01-01T00:00:00+00:00")
+            database.finish_test(identifier, {"ended_at": "2026-01-01T00:00:01+00:00",
+                                               "status": "completed", "termination_reason": "completed",
+                                               "duration_seconds": 1})
+            service = HistoryStore(database)
+            evaluations = EvaluationStore(database)
+            evaluations.save_rubric("global", {"automatic_local": True, "criteria": [
+                {"id": "done", "title": "Concluído", "type": "status", "value": "completed"}
+            ]})
+            self.assertEqual(service.matching_ids(filters={"batch": "g"}, pending_evaluation=True), [identifier])
+            self.assertEqual(evaluate_automatic(service, [identifier]), 1)
+            self.assertEqual(evaluate_automatic(service, [identifier]), 0)
+            self.assertEqual(service.matching_ids(filters={"batch": "g"}, pending_evaluation=True), [])

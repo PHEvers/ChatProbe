@@ -90,36 +90,52 @@ def evaluate_selection(view, records, catalog):
         view.submit(lambda: [item for row in records for item in store.for_test(row["id"])],
                     show, valid=popup.winfo_exists)
 
+    def configuration():
+        rubric = json.loads(editor.value())
+        if not isinstance(rubric, dict) or not isinstance(rubric.get("criteria"), list):
+            raise ValueError("Preencha a lista criteria no JSON.")
+        from src.chatprobe.evaluation.engine import Criterion
+        criteria = [Criterion(**raw) for raw in rubric["criteria"]]
+        for criterion in criteria:
+            criterion.validate()
+        if not criteria or len({criterion.id for criterion in criteria}) != len(criteria):
+            raise ValueError("Informe critérios únicos.")
+        if not isinstance(rubric.get("reference", ""), str) or not isinstance(rubric.get("expected", ""), str):
+            raise ValueError("A referência e o resultado esperado devem ser texto.")
+        threshold = rubric.get("threshold", 80)
+        if type(threshold) not in (int, float) or not 0 <= threshold <= 100:
+            raise ValueError("A nota mínima deve estar entre 0 e 100.")
+        profile_id = labels.get(provider.get())
+        if rubric.get("automatic_local") is True and any(item.type == "semantic" for item in criteria):
+            raise ValueError("A avaliação automática local exige critérios determinísticos.")
+        if rubric.get("automatic_local") is True and profile_id:
+            raise ValueError("Selecione Avaliação local para automatizar.")
+        rubric["provider_id"] = profile_id
+        return rubric, criteria
+
+    def save_configuration():
+        try:
+            rubric, _ = configuration()
+            store.save_rubric(scope.get(), rubric)
+            load_rubric()
+            output.set_value("Configuração salva.")
+        except (ValueError, TypeError, OSError) as error:
+            messagebox.showerror("Avaliação", str(error), parent=popup)
+
     def start():
         nonlocal busy, control
         if busy:
             return
         try:
-            rubric = json.loads(editor.value())
-            if not isinstance(rubric, dict) or not isinstance(rubric.get("criteria"), list):
-                raise ValueError("Preencha a lista criteria no JSON.")
-            reference = rubric.get("reference", "")
-            if not isinstance(reference, str) or not isinstance(rubric.get("expected", ""), str):
-                raise ValueError("A referência e o resultado esperado devem ser texto.")
-            from src.chatprobe.evaluation.engine import Criterion
-            criteria = [Criterion(**raw) for raw in rubric["criteria"]]
-            for criterion in criteria:
-                criterion.validate()
-            if not criteria or len({criterion.id for criterion in criteria}) != len(criteria):
-                raise ValueError("Informe critérios únicos.")
-            threshold = rubric.get("threshold", 80)
-            if type(threshold) not in (int, float) or not 0 <= threshold <= 100:
-                raise ValueError("A nota mínima deve estar entre 0 e 100.")
-            profile_id = labels.get(provider.get())
+            rubric, criteria = configuration()
+            profile_id = rubric["provider_id"]
             active = catalog.resolve(providers[profile_id]) if profile_id else None
-            sends_data = bool(active and reference.strip() and any(criterion.type == "semantic" for criterion in criteria))
+            sends_data = bool(active and rubric.get("reference", "").strip() and
+                              any(criterion.type == "semantic" for criterion in criteria))
             if sends_data and not messagebox.askyesno("Avaliação por IA",
                 "Enviar referência, prompt e conversa ao provedor selecionado? A operação pode consumir cotas ou créditos.",
                 parent=popup):
                 return
-            rubric["provider_id"] = profile_id
-            if "expected" not in rubric and len(records) == 1 and records[0].get("library_expected"):
-                rubric["expected"] = records[0]["library_expected"]
             rubric = store.save_rubric(scope.get(), rubric)
         except (ValueError, TypeError, OSError) as error:
             messagebox.showerror("Avaliação", str(error), parent=popup)
@@ -235,13 +251,13 @@ def evaluate_selection(view, records, catalog):
 
     toolbar = ttk.Frame(popup)
     toolbar.pack(fill="x", padx=8, pady=6)
-    for label, callback in (
-        ("Avaliar", start), ("Anteriores", recent), ("Revisar", review), ("Exportar", export),
+    for index, (label, callback) in enumerate((
+        ("Avaliar", start), ("Salvar critérios", save_configuration), ("Anteriores", recent), ("Revisar", review), ("Exportar", export),
         ("Fixar baseline", lambda: baseline(True)), ("Comparar", lambda: baseline(False)), ("Painel", dashboard),
         ("Pausar/retomar", lambda: (control.pause() if control.ready.is_set() else control.resume()) if control else None),
         ("Parar", lambda: control.stop() if control else None),
-    ):
-        ttk.Button(toolbar, text=label, command=callback).pack(side="left")
+    )):
+        ttk.Button(toolbar, text=label, command=callback).grid(row=index // 5, column=index % 5, padx=2, pady=2, sticky="ew")
 
     def close():
         if control:
@@ -252,3 +268,16 @@ def evaluate_selection(view, records, catalog):
     popup.protocol("WM_DELETE_WINDOW", close)
     load_rubric()
     recent()
+
+
+def evaluate_automatic(history, identifiers):
+    store = EvaluationStore(history.store)
+    total = 0
+    for record in history.details(identifiers):
+        rubric = store.load_rubric(selection_scopes([record]))
+        if rubric.get("automatic_local") is True and store.for_test(record["id"]) == []:
+            if any(c.get("type") == "semantic" for c in rubric.get("criteria", ())):
+                continue
+            store.save(evaluate(record, rubric))
+            total += 1
+    return total

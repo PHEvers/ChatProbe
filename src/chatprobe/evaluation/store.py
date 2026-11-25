@@ -18,7 +18,7 @@ class EvaluationStore:
         return {"criteria": [], "threshold": 80, "reference": ""}
 
     def save_rubric(self, scope, data):
-        data = {key: data[key] for key in ("criteria", "threshold", "reference", "expected", "provider_id")
+        data = {key: data[key] for key in ("criteria", "threshold", "reference", "expected", "provider_id", "automatic_local")
                 if key in data}
         encoded = json.dumps(data, sort_keys=True, ensure_ascii=False)
         with self.store.transaction() as db:

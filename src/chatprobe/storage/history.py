@@ -12,6 +12,7 @@ from src.chatprobe.storage.history_metadata import (
 
 FILTERS = {
     "library_prompt": "t.library_prompt_id", "library_collection": "t.library_collection_id",
+    "library_collection_run": "t.library_collection_run_id",
     "product": "t.product", "provider": "json_extract(t.provider_json,'$.name')",
     "model": "json_extract(t.provider_json,'$.model')", "status": "t.status",
     "execution_type": "t.execution_type", "version": "t.application_version", "batch": "t.batch_id",
@@ -116,6 +117,15 @@ class HistoryStore:
             item["started_at"] = utc_value(item["started_at"])
             output.append(item)
         return HistoryPage(output, totals, page, pages)
+
+    def matching_ids(self, search="", filters=None, *, pending_evaluation=False):
+        where, params = condition(search, filters or {})
+        if pending_evaluation:
+            where += (" AND " if where else " WHERE ") + (
+                "NOT EXISTS (SELECT 1 FROM evaluations e WHERE e.test_id=t.id)")
+        with self.store.transaction() as db:
+            db.create_function("fold", 1, lambda value: str(value or "").casefold(), deterministic=True)
+            return [row[0] for row in db.execute(f"SELECT t.id FROM tests t{where} ORDER BY t.started_at DESC", params)]
 
     def details(self, identifiers):
         result = []
